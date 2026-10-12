@@ -10,7 +10,7 @@ Keep Claude working on a task with a configurable continuation prompt, visible c
 
 ![Widget preview](assets/widget-preview.svg)
 
-**Preview release:** 62 automated checks pass. App loading, the widget, Resume, and detection of the real free-message usage notice have been exercised on macOS. Successful automatic continuation after a real response and recovery after an actual usage reset still need live validation. See [the test report](TEST-REPORT.md).
+**Preview release:** 69 automated checks pass. App loading, the widget, Resume, and detection of the real free-message usage notice have been exercised on macOS. Successful automatic continuation after a real response and recovery after an actual usage reset still need live validation. See [the test report](TEST-REPORT.md).
 
 ## What it does
 
@@ -51,11 +51,11 @@ Installation creates a versioned backup before patching a separate copy. The ins
 
 ## Use
 
-Open Settings, choose your continuation prompt and limits, then close Settings. Press **Start while Claude is responding** in an existing chat. When Claude finishes and completion is confirmed, the card shows a countdown before sending the continuation.
+Open Settings, choose your continuation prompt and limits, then close Settings. Press **Start** in an existing chat. For a completed response, the card checks it and begins a cancellable countdown. During generation, it waits for Claude to finish. Starting during a usage limit preserves the request and schedules the continuation after availability is verified.
 
 Press **Pause** or **Cancel countdown** to cancel pending automation. Press **Resume** after a pause. **Stop** stops the automation without interrupting Claude’s current response. Editing the prompt pauses automation until you resume.
 
-A chat that is already idle does not receive a message just because you press Start. Start your normal request, then enable the card while Claude works.
+Start explicitly requests continuation of the latest assistant response. An empty chat pauses; send the first request normally. Loading the widget alone never sends a message.
 
 Defaults are a 10-second delay, 10 continuations, six hours, and a five-second minimum send cooldown. Unlimited limits retain the other safeguards. Uncertain delivery pauses instead of retrying a send.
 

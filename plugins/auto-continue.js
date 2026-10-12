@@ -10,7 +10,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
   const STATES = Object.freeze(['DISABLED','IDLE','GENERATING','FINISHED','COUNTDOWN','SENDING_CONTINUE','WAITING_FOR_GENERATION','RATE_LIMITED','WAITING_FOR_USAGE_RESET','CHECKING_AVAILABILITY','NETWORK_ERROR','RECOVERING','PAUSED','ERROR','STOPPED']);
   const edges = {
     DISABLED:['IDLE'], STOPPED:['IDLE'], PAUSED:['IDLE'], ERROR:['PAUSED','IDLE'],
-    IDLE:['GENERATING','RATE_LIMITED','NETWORK_ERROR'],
+    IDLE:['COUNTDOWN','GENERATING','RATE_LIMITED','NETWORK_ERROR'],
     GENERATING:['FINISHED','RATE_LIMITED','NETWORK_ERROR'],
     FINISHED:['COUNTDOWN','GENERATING','RATE_LIMITED','NETWORK_ERROR'],
     COUNTDOWN:['SENDING_CONTINUE','GENERATING','RATE_LIMITED','NETWORK_ERROR'],
@@ -69,18 +69,18 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
       const from=this.state;this.state=next;this.log({event:'state',from,to:next,reason});
     }
     cancel(next='PAUSED',reason='HUMAN_CONTROL') {this.epoch++;this.deadline=null;this.nextCheck=null;this.lastReason=reason;this.transition(next,reason);}
-    arm(conversation,now=Date.now()) {
+    arm(conversation,now=Date.now(),continueExisting=false) {
       if(!conversation){this.cancel('PAUSED','CONVERSATION_UNKNOWN');return;}
       if(!['DISABLED','PAUSED','STOPPED','ERROR'].includes(this.state))this.cancel();
       this.epoch++;this.conversation=conversation;this.stats.start=now;this.stats.count=0;
       this.lastHash=null;this.repeats=0;this.emptyCount=0;this.lastError=null;this.nextCheck=null;
-      this.resumeNeeded=false;this.quietSince=null;
+      this.resumeNeeded=false;this.kickoffRequested=continueExisting;this.quietSince=null;
       this.transition('IDLE','USER_ENABLED');
     }
     inactive(){return ['DISABLED','PAUSED','STOPPED','ERROR'].includes(this.state);}
     wait(kind,s,now) {
       if(kind!=='RATE_LIMIT'&&['SENDING_CONTINUE','WAITING_FOR_GENERATION'].includes(this.state)) {this.failed('DELIVERY_UNCERTAIN');return;}
-      this.resumeNeeded=['GENERATING','FINISHED','COUNTDOWN','SENDING_CONTINUE','WAITING_FOR_GENERATION','RECOVERING'].includes(this.state)||this.resumeNeeded===true;
+      this.resumeNeeded=(this.kickoffRequested&&!!s.hash)||['GENERATING','FINISHED','COUNTDOWN','SENDING_CONTINUE','WAITING_FOR_GENERATION','RECOVERING'].includes(this.state)||this.resumeNeeded===true;
       this.epoch++;this.deadline=null;this.lastError=kind;this.verifyAt=null;
       if(kind==='RATE_LIMIT') {
         this.transition('RATE_LIMITED',kind);this.stats.usageWaits++;this.poll=0;
@@ -117,13 +117,20 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
       if(s.error){this.lastError=s.error;this.cancel('PAUSED',s.error);return null;}
       if(s.generating) {
         if(this.state!=='GENERATING'){this.epoch++;this.deadline=null;this.transition('GENERATING','STOP_CONTROL_VISIBLE');}
-        this.observedHash=s.hash;this.quietSince=null;return null;
+        this.kickoffRequested=false;this.observedHash=s.hash;this.quietSince=null;return null;
       }
       if(!s.ready){this.cancel('PAUSED','UI_CHANGED');return null;}
+      if(this.state==='IDLE'&&this.kickoffRequested){
+        if(!s.hash){this.cancel('PAUSED','NO_RESPONSE_TO_CONTINUE');return null;}
+        if(!s.completed){this.cancel('PAUSED','COMPLETION_UNCERTAIN');return null;}
+        if(this.quietHash!==s.hash||this.quietSince==null){this.quietHash=s.hash;this.quietSince=now;return null;}
+        if(now-this.quietSince<this.options.quietMs)return null;
+        this.kickoffRequested=false;this.schedule(now);return null;
+      }
       if(this.state==='RECOVERING') {
         if(now<this.verifyAt)return null;
         this.nextCheck=null;this.lastError=null;
-        if(this.resumeNeeded){this.resumeNeeded=false;this.schedule(now);}else this.transition('IDLE','AVAILABILITY_VERIFIED');
+        if(this.resumeNeeded){this.resumeNeeded=false;this.kickoffRequested=false;this.schedule(now);}else this.transition('IDLE','AVAILABILITY_VERIFIED');
         return null;
       }
       if(this.state==='GENERATING') {
@@ -157,7 +164,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
   const ID='claude-auto-continue-plugin', KEY='claude_auto_continue_settings';
   if(window.claudeAutoContinue||document.getElementById(ID)||!document.body)return;
   const {Engine,config,classify}=window.ClaudeAutoContinueEngine;
-  const VERSION='2.1.0-mac-preview';
+  const VERSION='2.1.1-mac-preview';
   const PRESETS={
     Default:'Continue working on the current project from exactly where you left off. Preserve completed work. Test your latest changes, fix any problems you find, then proceed to the next highest-priority unfinished task. Do not restart the project or redo completed work.',
     Simple:'Continue.',
@@ -172,7 +179,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
     assistant:'[data-message-author-role="assistant"], [data-testid="assistant-message"], .font-claude-response',
     message:'[data-message-author-role], [data-testid="user-message"], [data-testid="assistant-message"], .font-claude-response, pre, code',
     warning:'[role="alert"], [role="status"], [data-testid="usage-limit-banner"], [data-testid="error-banner"]',
-    buttons:'button', completion:'button[aria-label="Copy" i],button[aria-label="Copy response" i],button[data-testid="copy-response-button"]'
+    buttons:'button', completion:'button[data-testid="action-bar-copy"],button[aria-label="Copy" i],button[aria-label="Copy response" i],button[data-testid="copy-response-button"]'
   });
   let saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')||{};}catch{}
   let settings={...config(saved),phrase:typeof saved.phrase==='string'&&saved.phrase!=='Continue'?saved.phrase:PRESETS.Default,
@@ -251,8 +258,8 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
     // Toolbars can be siblings of the response body. Stop at another assistant
     // response so an older turn's Copy button can never complete the latest turn.
     let area=response?.closest('[data-message-author-role="assistant"]')||response?.closest('[data-testid="assistant-message"]')||response?.parentElement;
-    const completionControls=node=>all(SELECTORS.completion,node).filter(b=>!b.closest('pre,code,[data-testid="code-block"]')&&(b.getAttribute('aria-label')?.toLowerCase()!=='copy'||!response.contains(b)));
-    if(response&&!area?.matches('[data-message-author-role="assistant"], [data-testid="assistant-message"]')){
+    const completionControls=node=>[...node.querySelectorAll(SELECTORS.completion)].filter(b=>b.isConnected&&!container.contains(b)).filter(b=>!b.closest('pre,code,[data-testid="code-block"]')&&(b.getAttribute('aria-label')?.toLowerCase()!=='copy'||!response.contains(b)));
+    if(response){
       for(let n=response.parentElement,depth=0;n&&n!==document.body&&depth<8;n=n.parentElement,depth++){
         const others=[...n.querySelectorAll(SELECTORS.assistant)].filter(x=>x!==response&&!x.contains(response)&&!response.contains(x));
         if(others.length)break;
@@ -283,7 +290,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
       if(request!==armRequest||disposed)return;
       arming=false;
       if(!lock){cancel('PAUSED','ANOTHER_WINDOW_ACTIVE');return;}
-      engine.options=config(settings);engine.arm(conversation());check.checked=!engine.inactive();
+      engine.options=config(settings);engine.arm(conversation(),Date.now(),true);check.checked=!engine.inactive();
       if(engine.inactive()){render();return;}
       const held=new Promise(resolve=>{releaseLock=resolve;});tick();render();await held;
     });}catch{arming=false;cancel('PAUSED','WINDOW_LOCK_FAILED');}
@@ -342,8 +349,8 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
     if(el('ac-state').textContent!==status)el('ac-state').textContent=status;
     widget.classList.toggle('ac-active-glow',!engine.inactive());widget.classList.toggle('ac-counting',engine.state==='COUNTDOWN');
     el('ac-cancel-btn').textContent=arming?'Starting…':engine.inactive()?(engine.state==='DISABLED'||engine.state==='STOPPED'?'Start':'Resume'):engine.state==='COUNTDOWN'?'Cancel countdown':'Pause';
-    const reasons={HUMAN_CONTROL:'Paused while you interact with the chat. Resume when ready.',UNKNOWN:'Claude is showing a warning. Resolve it, then choose Resume.',UI_CHANGED:'Chat controls are unavailable. Open a chat and try Resume.',COMPLETION_UNCERTAIN:'Could not confirm the response finished. Start a response, then Resume.',CONVERSATION_UNKNOWN:'Open an existing chat, then choose Start.',CONVERSATION_CHANGED:'You changed chats. Resume to enable this chat.',SETTINGS_CHANGED:'Settings saved. Resume when you are ready.',WINDOW_LOCK_UNAVAILABLE:'Window coordination is unavailable. Reopen the local app.',ANOTHER_WINDOW_ACTIVE:'Another window is running Auto Continue. Pause it first.',WINDOW_LOCK_FAILED:'Could not coordinate windows. Reopen the local app.',WAKE_REVALIDATION_REQUIRED:'Your Mac woke up. Check the chat, then Resume.',MAX_CONTINUATIONS:'Session continuation limit reached. Resume starts a new session.',MAX_RUNTIME:'Session time limit reached. Resume starts a new session.',DUPLICATE_RESPONSE_LOOP:'Repeated responses detected. Review the chat before resuming.',HUMAN_DRAFT:'Your message is still in the composer. Send or clear it first.'};
-    const detail=engine.inactive()?(reasons[engine.lastReason]|| (engine.state==='DISABLED'?'Start during a response to continue automatically when Claude finishes.':engine.state==='STOPPED'?'Automation stopped. Start when you are ready.':`Needs attention: ${(engine.lastReason||engine.lastError||'unknown').toLowerCase().replaceAll('_',' ')}.`)):engine.state==='GENERATING'?'Claude is working. The next continuation waits until the response finishes.':engine.state==='WAITING_FOR_USAGE_RESET'?`No messages will be sent. Next check: ${engine.nextCheck?new Date(engine.nextCheck).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}):'pending'}.`:engine.state==='IDLE'?'Waiting for a new response. Start your request, then Resume while Claude works.':engine.state==='COUNTDOWN'?'You can cancel before the next message is sent.':'Monitoring this chat. You can pause at any time.';
+    const reasons={NO_RESPONSE_TO_CONTINUE:'There is no assistant response yet. Send your first request, then press Start.',HUMAN_CONTROL:'Paused while you interact with the chat. Resume when ready.',UNKNOWN:'Claude is showing a warning. Resolve it, then choose Resume.',UI_CHANGED:'Chat controls are unavailable. Open a chat and try Resume.',COMPLETION_UNCERTAIN:'Could not confirm the response finished. Start a response, then Resume.',CONVERSATION_UNKNOWN:'Open an existing chat, then choose Start.',CONVERSATION_CHANGED:'You changed chats. Resume to enable this chat.',SETTINGS_CHANGED:'Settings saved. Resume when you are ready.',WINDOW_LOCK_UNAVAILABLE:'Window coordination is unavailable. Reopen the local app.',ANOTHER_WINDOW_ACTIVE:'Another window is running Auto Continue. Pause it first.',WINDOW_LOCK_FAILED:'Could not coordinate windows. Reopen the local app.',WAKE_REVALIDATION_REQUIRED:'Your Mac woke up. Check the chat, then Resume.',MAX_CONTINUATIONS:'Session continuation limit reached. Resume starts a new session.',MAX_RUNTIME:'Session time limit reached. Resume starts a new session.',DUPLICATE_RESPONSE_LOOP:'Repeated responses detected. Review the chat before resuming.',HUMAN_DRAFT:'Your message is still in the composer. Send or clear it first.'};
+    const detail=engine.inactive()?(reasons[engine.lastReason]|| (engine.state==='DISABLED'?'Start continues this chat after the countdown, or waits while Claude is working.':engine.state==='STOPPED'?'Automation stopped. Start when you are ready.':`Needs attention: ${(engine.lastReason||engine.lastError||'unknown').toLowerCase().replaceAll('_',' ')}.`)):engine.state==='GENERATING'?'Claude is working. The next continuation waits until the response finishes.':engine.state==='WAITING_FOR_USAGE_RESET'?`No messages will be sent. Next check: ${engine.nextCheck?new Date(engine.nextCheck).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}):'pending'}.`:engine.state==='IDLE'?'Checking the latest response before starting the countdown.':engine.state==='COUNTDOWN'?'You can cancel before the next message is sent.':'Monitoring this chat. You can pause at any time.';
     if(el('ac-detail').textContent!==detail)el('ac-detail').textContent=detail;
     el('ac-summary').textContent=`${engine.stats.count} / ${settings.maxConsecutive==='unlimited'?'∞':settings.maxConsecutive} continuations`;
     el('ac-runtime').textContent=`${engine.stats.start?Math.floor((Date.now()-engine.stats.start)/60000):0} min elapsed`;

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.1 preview — 2026-10-12
+
+- Fixed a usage wait entered from idle losing its continuation intent when usage returned.
+- Start now explicitly continues a completed chat after quiet checks and a cancellable countdown.
+- Fixed completion controls outside annotated assistant bodies, including real Claude action-bar-copy toolbars. Mounted hidden toolbars are recognized; older turns and code-copy controls remain excluded.
+- Added seven regression cases; 69 automated checks total.
+
 ## 2.1.0 preview — 2026-10-12
 
 Initial public release of Claude Continue for macOS.

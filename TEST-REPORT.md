@@ -1,10 +1,10 @@
 # Validation report
 
-Build: `2.1.0-mac-preview`, based on Claude Desktop `2.31226.1` / Electron `44.4.3`.
+Build: `2.1.1-mac-preview`, based on Claude Desktop `2.31226.1` / Electron `44.4.3`.
 
 ## Automated checks
 
-The test suite covers 60 JavaScript cases across the pure state machine, synthetic DOM, and mocked Electron loader, plus two Python update tests (62 total). Run the commands in README.md to reproduce the automated checks. Tests do not contact Claude.
+The test suite covers 67 JavaScript cases across the pure state machine, synthetic DOM, and mocked Electron loader, plus two Python update tests (69 total). Run the commands in README.md to reproduce the automated checks. Tests do not contact Claude.
 
 Verified behaviors include:
 
@@ -60,3 +60,7 @@ Uninstall and restoration to the untouched original were exercised during develo
 - Added a source-only Update launcher for installed copies.
 
 The update tests verify source backups, preservation of signed app files, and refusal of incomplete update folders before shutdown. The final plugin was reloaded in the running local copy, and the launch verifier confirmed one widget, composer, and Send control.
+
+## Urgent continuation repair
+
+Live operational logs showed quota recovery returning to IDLE without scheduling a continuation. Read-only inspection of the loaded chat showed action-bar-copy outside annotated response bodies. Both cases now have regression coverage. After injection, the real adapter reported completed=true with error=NONE, composer=true, and send=true. A live send is being checked separately; successful tests alone are not an end-to-end claim.
