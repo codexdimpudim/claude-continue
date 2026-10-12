@@ -8,7 +8,7 @@ fs.mkdirSync(logDir,{recursive:true,mode:0o700});
 const logPath=path.join(logDir,'auto-continue.log');
 const statusPath=path.join(root,'status.json');
 let assertion=null,shuttingDown=false;
-const health=new Map(),leases=new Map(),attached=new WeakSet();
+const health=new Map(),leases=new Map(),attached=new WeakSet(),throttling=new Map();
 function log(event,fields={}){
   try{
     if(fs.existsSync(logPath)&&fs.statSync(logPath).size>1024*1024){for(let i=2;i>=1;i--)if(fs.existsSync(logPath+'.'+i))fs.renameSync(logPath+'.'+i,logPath+'.'+(i+1));fs.renameSync(logPath,logPath+'.1');}
@@ -17,19 +17,32 @@ function log(event,fields={}){
 }
 function allowed(contents){try{const u=new URL(contents.getURL());return u.protocol==='https:'&&['claude.ai','www.claude.ai'].includes(u.hostname);}catch{return false;}}
 function release(){if(assertion!==null){powerSaveBlocker.stop(assertion);assertion=null;log('power-released');}}
+function restoreTimers(contents){
+  const prior=throttling.get(contents.id);if(!prior)return;
+  throttling.delete(contents.id);
+  try{if(!contents.isDestroyed())contents.setBackgroundThrottling(prior.value);}catch{log('timer-restore-failed');}
+}
+function activeTimers(contents,active){
+  if(!active){restoreTimers(contents);return;}
+  if(throttling.has(contents.id))return;
+  try{const value=contents.getBackgroundThrottling();contents.setBackgroundThrottling(false);throttling.set(contents.id,{contents,value});}catch{log('timer-control-unavailable');}
+}
+function drop(contents){restoreTimers(contents);leases.delete(contents.id);health.delete(contents.id);updatePower();}
+function restoreAllTimers(){for(const x of [...throttling.values()])restoreTimers(x.contents);}
 function updatePower(){
-  const active=[...leases.values()].some(x=>Date.now()-x.time<30000&&x.active&&x.keepAwake);
+  for(const [id,x] of leases)if(Date.now()-x.time>=120000){restoreTimers(x.contents);leases.delete(id);}
+  const active=[...leases.values()].some(x=>x.active&&x.keepAwake);
   if(active&&assertion===null){assertion=powerSaveBlocker.start('prevent-app-suspension');log('power-started');}
   if(!active)release();
 }
-function status(){try{fs.writeFileSync(statusPath,JSON.stringify({pid:process.pid,version:app.getVersion(),loaderVersion:'2.1.0',time:Date.now(),powerAssertion:assertion!==null,renderers:[...health.values()]}),{mode:0o600});}catch{}}
+function status(){try{fs.writeFileSync(statusPath,JSON.stringify({pid:process.pid,version:app.getVersion(),loaderVersion:'2.2.0',time:Date.now(),powerAssertion:assertion!==null,renderers:[...health.values()]}),{mode:0o600});}catch{}}
 function message(contents,args){
-  if(!allowed(contents))return;
+  if(!compatible||!allowed(contents))return;
   const detail=args[0];const message=typeof detail?.message==='string'?detail.message:args[1];
   if(typeof message!=='string'||!message.startsWith('[ClaudeAutoContinue] ')||message.length>1500)return;
   let data;try{data=JSON.parse(message.slice(20));}catch{return;}
   if(data.event==='heartbeat'){
-    leases.set(contents.id,{time:Date.now(),active:data.active===true,keepAwake:data.keepAwake===true});if(['DISABLED','IDLE','GENERATING','FINISHED','COUNTDOWN','SENDING_CONTINUE','WAITING_FOR_GENERATION','RATE_LIMITED','WAITING_FOR_USAGE_RESET','CHECKING_AVAILABILITY','NETWORK_ERROR','RECOVERING','PAUSED','ERROR','STOPPED'].includes(data.state))health.set(contents.id,{widgets:data.widgets===1?1:0,composer:data.composer===true,send:data.send===true,state:data.state});
+    activeTimers(contents,data.active===true);leases.set(contents.id,{contents,time:Date.now(),active:data.active===true,keepAwake:data.keepAwake===true});if(['DISABLED','IDLE','GENERATING','FINISHED','COUNTDOWN','SENDING_CONTINUE','WAITING_FOR_GENERATION','RATE_LIMITED','WAITING_FOR_USAGE_RESET','CHECKING_AVAILABILITY','NETWORK_ERROR','RECOVERING','PAUSED','ERROR','STOPPED'].includes(data.state))health.set(contents.id,{widgets:data.widgets===1?1:0,composer:data.composer===true,send:data.send===true,state:data.state,rendererVersion:data.rendererVersion==='2.2.0-mac-preview'?data.rendererVersion:undefined,tutorialVisible:data.tutorialVisible===true});
     updatePower();return;
   }
   if(data.event==='open-logs'){shell.openPath(logDir);return;}
@@ -48,10 +61,10 @@ const compatible=manifest.claudeVersion===app.getVersion();
 async function injectPluginsIntoContents(contents){
   if(shuttingDown||contents.isDestroyed()||!allowed(contents)||!compatible)return;
   try{
-    const meta={claudeVersion:app.getVersion(),loaderVersion:'2.1.0',compatibility:'injection tested; automation preview'};
+    const meta={claudeVersion:app.getVersion(),loaderVersion:'2.2.0',compatibility:'injection tested; automation preview'};
     await contents.executeJavaScript(`window.__CLAUDE_AC_META=${JSON.stringify(meta)};\n${engine}\n${plugin}`);
     const report=await contents.executeJavaScript('window.claudeAutoContinue?.diagnostics()');
-    if(report)health.set(contents.id,{widgets:report.widgets,composer:report.composer,send:report.send,state:report.state});
+    if(report)health.set(contents.id,{widgets:report.widgets,composer:report.composer,send:report.send,state:report.state,rendererVersion:report.version==='2.2.0-mac-preview'?report.version:undefined,tutorialVisible:report.tutorialVisible===true});
     log('injection',{widgets:report?.widgets||0,composer:report?.composer===true,send:report?.send===true});status();
   }catch{log('injection-failed');}
 }
@@ -60,9 +73,9 @@ function attach(contents){
   contents.on('console-message',(_event,...args)=>message(contents,[typeof _event?.message==='string'?_event:args[0],...args.slice(1)]));
   contents.on('dom-ready',()=>injectPluginsIntoContents(contents));
   contents.on('did-finish-load',()=>injectPluginsIntoContents(contents));
-  contents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame){leases.delete(contents.id);health.delete(contents.id);updatePower();}});
-  contents.on('render-process-gone',()=>{leases.delete(contents.id);health.delete(contents.id);updatePower();status();log('renderer-exited');});
-  contents.once('destroyed',()=>{leases.delete(contents.id);health.delete(contents.id);updatePower();status();});
+  contents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame){drop(contents);}});
+  contents.on('render-process-gone',()=>{drop(contents);status();log('renderer-exited');});
+  contents.once('destroyed',()=>{drop(contents);status();});
 }
 app.on('web-contents-created',(_event,contents)=>attach(contents));
 app.whenReady().then(()=>{for(const c of webContents.getAllWebContents())attach(c);});
@@ -83,11 +96,11 @@ const watch=setInterval(()=>{
   updatePower();status();
   if(fs.existsSync(path.join(root,'shutdown.json'))){
     shuttingDown=true;for(const c of webContents.getAllWebContents())if(allowed(c))c.executeJavaScript('window.claudeAutoContinue?.dispose()').catch(()=>{});
-    release();app.quit();
+    restoreAllTimers();release();app.quit();
   }
 },2000);
 watch.unref();
-app.on('before-quit',()=>{shuttingDown=true;clearInterval(watch);release();log('app-exit');});
+app.on('before-quit',()=>{shuttingDown=true;clearInterval(watch);restoreAllTimers();release();log('app-exit');});
 log('loader-start',{claudeVersion:app.getVersion(),macOS:os.release(),compatible});
 if(!compatible)log('compatibility-paused');
 status();

@@ -1,10 +1,10 @@
 # Validation report
 
-Build: `2.1.1-mac-preview`, based on Claude Desktop `2.31226.1` / Electron `44.4.3`.
+Build: `2.2.0-mac-preview`, based on Claude Desktop `2.31226.1` / Electron `44.4.3`.
 
 ## Automated checks
 
-The test suite covers 67 JavaScript cases across the pure state machine, synthetic DOM, and mocked Electron loader, plus two Python update tests (69 total). Run the commands in README.md to reproduce the automated checks. Tests do not contact Claude.
+The test suite covers 86 JavaScript cases across the pure state machine, synthetic DOM, and mocked Electron loader, plus five Python update tests (91 total). Run the commands in README.md to reproduce the automated checks. Tests do not contact Claude.
 
 Verified behaviors include:
 
@@ -44,7 +44,7 @@ Live testing was limited by exhausted usage. An initial continuation attempt det
 
 The actual “You are out of free messages … until … Upgrade” notice was inspected and added to regression coverage. The Waiting for usage reset state was manually confirmed in the real app. Resume and waiting are now distinguished from an unfamiliar error. Actual reset recovery remains unverified. See the later live sequence below for the confirmed continuation attempt.
 
-Not completed: a multihour unattended soak; actual quota reset; physical network-disconnect recovery; Chrome Remote Desktop interaction; actual app upgrade; separate Apple Silicon hardware; all enterprise/Keychain integrations; full-screen/resize visual acceptance across displays (the card and settings were visually checked in a browser fixture); live response-completion-selector validation after a successful response; a fresh full reinstall cycle. These remain acceptance checks before calling the release production-ready.
+Not completed: a multihour unattended soak; actual quota reset; physical network-disconnect recovery; Chrome Remote Desktop interaction; actual app upgrade; separate Apple Silicon hardware; all enterprise/Keychain integrations; full-screen/resize visual acceptance across displays (the card and settings were visually checked in a browser fixture); a fresh full reinstall cycle. These remain acceptance checks before calling the release production-ready.
 
 Uninstall and restoration to the untouched original were exercised during development. Restoration returns to the untouched signed original rather than overwriting it with a backup. This report intentionally distinguishes simulated coverage, live injection, and unverified live automation.
 
@@ -64,3 +64,13 @@ The update tests verify source backups, preservation of signed app files, and re
 ## Urgent continuation repair
 
 Live operational logs showed quota recovery returning to IDLE without scheduling a continuation. Read-only inspection of the loaded chat showed action-bar-copy outside annotated response bodies. Both cases now have regression coverage. After injection, the real adapter reported completed=true with error=NONE, composer=true, and send=true. A subsequent live sequence showed Start → countdown → submission → observed generation → stable response completion → another scheduled continuation. The user confirmed the repaired version worked. A later submission reached SEND_NOT_ACKNOWLEDGED and paused, so this remains bounded live evidence rather than a validated unattended loop. No conversation text or account data is included in this report.
+
+## 2.2.0 codebase review and feature validation
+
+The full distributed codebase was reviewed: the state engine, renderer, generated bundle, native loader, installer/update/restore paths, launchers, build configuration, tests, and documentation. Claude account or conversation databases were not inspected or modified. Findings and remaining limits are documented in [the review notes](docs/CODE-REVIEW.md). This is a code review with regression coverage, not proof that no bugs remain.
+
+Additional automated cases cover fast replies without a sampled Stop control, changed-response cancellation, loss of completion markers, approval for one send only, unknown errors during network recovery, saved timing clamps, first-run tour and replay, skipping or closing onboarding, smooth countdown display, theme persistence without session interruption, one-shot sessions, submitted composer preservation, keyboard pause, renderer throttling restoration, stale heartbeat expiry, PID reuse, pre-shutdown compatibility rejection, and update rollback after a simulated disk failure.
+
+The actual new tour, theme controls, settings layout, and countdown were exercised in a browser fixture using the real plugin sources. That fixture submits no Claude requests. Real app loading is checked separately after source deployment; this version does not claim a new live quota-reset or overnight soak result. The earlier successful 2.1.1 continuation remains the bounded live evidence described above.
+
+After the 2.2.0 source update, the real managed app reopened and the launcher verified one widget, composer, and Send control. Native health reported loader 2.2.0, renderer 2.2.0-mac-preview, DISABLED, tutorialVisible=true, and no power assertion. No Claude request was sent to perform this update verification. This confirms deployment and first-tour visibility in the actual renderer, not new end-to-end continuation or overnight validation.

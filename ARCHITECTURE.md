@@ -41,3 +41,11 @@ Initial live signing experiments showed two distinct failures: retaining Anthrop
 This distribution includes only the macOS adapter and Auto Continue plugin. The upstream loader, Windows/Linux installers, version spoofing, and unrelated plugins are excluded. No account files, conversation databases, authentication tokens, or billing state are directly edited.
 
 The loader's health record contains widget/control booleans, process/version metadata, and power assertion status. No persistent conversation identifier is needed. Renderer automation pins the current conversation only in memory and cancels on navigation. Unknown DOM states and ambiguous sends pause rather than retry.
+
+## Active timers and optional visibility
+
+The renderer owns a 500 ms safety tick and, in Paranoid mode, a 100 ms display timer. The native loader disables background timer throttling only for active compatible Claude renderers, independently of the optional prevent-app-suspension assertion. It records and restores the prior throttle setting on pause, navigation, renderer exit, stale heartbeat, or quit. Leases expire after two minutes without a heartbeat; this tolerates a browser timer delayed by one minute while still releasing abandoned assertions. This does not prevent shutdown or guarantee lid-close operation.
+
+Onboarding and appearance use the existing renderer preference storage. A separate seen flag records the first tutorial display, so it does not recur automatically if interrupted. Session activation stays explicit and is never restored from storage. Approval is scoped to the current countdown and invalidated by cancellation or warnings; final response fingerprint and completion checks remain mandatory.
+
+Source updates verify app hashes before shutdown, stage every source and backup, and restore replaced files if a later replacement fails. App binaries and account preferences are outside the source update set.

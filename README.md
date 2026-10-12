@@ -19,12 +19,17 @@ Original: 40 seconds · 3840 × 2160 · 60 fps · stereo audio. The inline playe
 
 ![Widget preview](assets/widget-preview.svg)
 
-**Preview release:** 69 automated checks pass. App loading, the widget, Resume, and detection of the real free-message usage notice have been exercised on macOS. A real Start → countdown → send → generation → completed-response sequence was observed, and the user confirmed it worked. Sustained unattended loops and recovery after an actual usage reset remain unverified. See [the test report](TEST-REPORT.md).
+**Preview release:** 91 automated checks pass. App loading, the widget, Resume, and detection of the real free-message usage notice have been exercised on macOS. A real Start → countdown → send → generation → completed-response sequence was observed, and the user confirmed it worked. Sustained unattended loops and recovery after an actual usage reset remain unverified. See [the test report](TEST-REPORT.md).
 
-[Installation guide](docs/INSTALLATION.md) · [Usage and settings](docs/USAGE.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Validation report](TEST-REPORT.md) · [Changelog](CHANGELOG.md)
+[Installation guide](docs/INSTALLATION.md) · [Usage and settings](docs/USAGE.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Validation report](TEST-REPORT.md) · [Changelog](CHANGELOG.md) · [Code review findings](docs/CODE-REVIEW.md)
 
 ## What it does
 
+- Greets you once with a skippable five-step tour; replay it from Settings when needed.
+- Offers five color schemes and a compact view.
+- Shows a tenth-of-a-second countdown, target time, and progress in Paranoid mode.
+- Supports approval before each continuation and a one-continuation session mode.
+- Lists recent operational activity and includes a keyboard pause shortcut.
 - Continues after observed generation and confirmed, stable completion.
 - Offers reusable prompts for coding, game development, or your own work.
 - Displays why it paused and when it will check a usage warning again.
@@ -61,7 +66,7 @@ Unknown app versions stop at the compatibility check. This is an independent pro
 
 ## Install
 
-1. Download and extract the [2.1.1 preview](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.1.1-preview.1). Keep the folder together.
+1. Download and extract the [2.2.0 preview](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.0-preview.1). Keep the folder together.
 2. Quit Claude and double-click **Install.command**.
 3. Resolve any macOS Keychain prompts yourself. Local signing can trigger them.
 4. Open an existing chat in the local copy. The installer checks for one widget, the composer, and Send.
@@ -72,6 +77,8 @@ You can also use [Download source](https://github.com/codexdimpudim/claude-conti
 Installation creates a versioned backup before patching a separate copy. The inspected build requires local signing: **Touch ID/passkey authentication tied to Anthropic’s signing identity is unavailable in the local copy.** Other signing-dependent integrations remain unverified. Read [the architecture notes](ARCHITECTURE.md) before using the preview for important work.
 
 ## Use
+
+On the first launch of this version, a short welcome tour explains the controls. It never opens automatically again in the same Claude profile, including after an update or restart. You can skip it or replay it using **Settings → Quick tour**. Automation remains off during the tour.
 
 Open Settings, choose your continuation prompt and limits, then close Settings. Press **Start** in an existing chat. For a completed response, the card checks it and begins a cancellable countdown. During generation, it waits for Claude to finish. Starting during a usage limit preserves the request and schedules the continuation after availability is verified.
 
@@ -87,6 +94,11 @@ When a usage notice appears, pending sends stop. Checks happen after 2, 5, 10, t
 
 | Setting | Default | What it changes |
 | --- | --- | --- |
+| Color scheme | Terracotta | Terracotta, Ocean, Forest, Lavender, or Light; saved for later launches |
+| Paranoid mode | Off | A live countdown in tenths of a second, scheduled target time, and progress bar; usage waits show the next passive check |
+| Compact widget | Off | Smaller card while keeping controls and the optional countdown accessible |
+| Ask before each continuation | Off | Waits for explicit approval after the countdown, then runs the normal final checks |
+| Continue once, then pause | Off | Overrides the session count cap to one submission; waits for the reply to finish before pausing |
 | Continuation prompt | Default project-continuation preset | Text to submit when there is no suitable response-scoped Continue control |
 | Project instructions | Empty | Extra instructions appended to the continuation prompt |
 | Delay | 10 seconds | Time to cancel after continuation is scheduled; configurable from 1–300 seconds |
@@ -96,7 +108,9 @@ When a usage notice appears, pending sends stop. Checks happen after 2, 5, 10, t
 | Keep Mac awake | Off | Requests a native prevent-app-suspension assertion while automation is active |
 | Debug logging | Off | Adds control/status metadata to local operational logs |
 
-Prompt, delay, cap, and polling changes pause the session. Resume explicitly when the settings are ready. Resume creates a fresh session, resetting the continuation count and elapsed-session timer. Keep-awake and logging toggles do not reset the session.
+Prompt, delay, cap, and polling changes pause the session. Resume explicitly when the settings are ready. Resume creates a fresh session, resetting the continuation count and elapsed-session timer. Color scheme, Paranoid mode, compact view, keep-awake, and logging toggles do not reset the session. Approval and one-shot changes pause it. **Option + Shift + P** pauses an active session. Recent activity and diagnostics are available in Settings.
+
+Paranoid mode shows the earliest scheduled send time, not a promise that Claude will accept a message at that instant. Final checks and the composer handoff may delay or cancel it. While Claude is working, no exact future send time is known; the widget says so. Approval mode can wait indefinitely and sends nothing until you approve.
 
 Unlimited caps keep draft protection, the minimum send cooldown, warning checks, acknowledgment checks, and loop detection. Keep-awake allows the display to sleep and cannot guarantee operation with a closed laptop lid, a shutdown, or a network outage.
 
@@ -104,7 +118,7 @@ See [the usage guide](docs/USAGE.md) for presets, examples, and the status table
 
 ## Update or remove
 
-- **Update.command** backs up and updates plugin sources, then reopens the local copy. The app is not re-signed and preferences remain saved.
+- **Update.command** checks the installed app before shutdown, backs up and stages plugin sources, then reopens the local copy. Failed replacements restore the previous sources. The app is not re-signed and preferences remain saved.
 - **Uninstall.command** or **Restore Claude.command** closes and removes the managed copy, verifies the original app’s signature, and opens it. Backups and logs remain.
 - **Check Compatibility.command** inspects the installed app without patching it.
 

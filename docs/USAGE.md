@@ -2,6 +2,10 @@
 
 [Back to README](../README.md)
 
+## First launch
+
+A five-step welcome tour explains Start, Pause, settings, and usage waiting. It appears automatically only once per Claude browser profile. Skip it or complete it; even closing the app partway does not bring it back on the next launch. **Settings → Quick tour** replays it on request. Opening the tour during automation pauses the session.
+
 ## A normal session
 
 Open an existing chat in the managed local copy. Choose Settings, configure your continuation prompt and limits, close Settings, and press Start.
@@ -20,10 +24,28 @@ An example coding workflow is to ask Claude to implement a focused feature, then
 | Resume | Enable a fresh session after a pause; re-check the chat before scheduling |
 | Stop | Stop automatic continuations; does not interrupt Claude’s current response |
 | Settings | Edit prompts, session limits, checking intervals, and optional behavior |
+| Approve this continuation | In approval mode, authorize the current continuation after its countdown; final checks still apply |
+| Option + Shift + P | Pause active automation immediately |
+| Quick tour | Replay onboarding on request; pauses an active session |
+| Reset position | Bring the widget back to a visible position |
 | Open Logs | Open the local operational-log folder |
 | Drag the card header | Move the widget; position is saved and clamped to the window |
 
 Resume resets the enabled-session count and elapsed timer. App reloads and launches start off even if the previous session was active.
+
+## Visibility and modes
+
+**Paranoid mode:** enable it in Settings to see a countdown updating every tenth of a second, the earliest scheduled send time, and a progress bar. Usage or network waits show the time to the next passive check instead. While Claude is generating, there is no scheduled send yet. A timestamp is a local schedule, not a guarantee of successful submission: final checks can cancel or delay it.
+
+**Ask me before each continuation:** when the countdown finishes, the card waits and reveals an approval button. No message is sent until you click it. Approval applies to one continuation and expires if you pause, change chats, or encounter a warning. The next continuation needs its own approval. This option can be combined with Paranoid mode.
+
+**Continue once, then pause:** temporarily caps the enabled session at one submission, even if your normal maximum is Unlimited. The plugin monitors that response and pauses after completion; it does not schedule a second continuation. Resume starts another one-shot session.
+
+**Color schemes:** Terracotta, Ocean, Forest, Lavender, and Light apply to the card, settings panel, and tutorial. **Compact widget** hides extra detail and statistics while leaving the buttons and optional monitor available. Appearance changes apply immediately and preserve the active session.
+
+**Recent activity:** Settings lists the latest five state transitions, with local times and reasons. It contains operational metadata, not conversation text. Session diagnostics show continuation counts, failures, usage waits, and versions. History is held in memory, bounded, and cleared when the widget is reloaded.
+
+Appearance and modes are saved across launches. Automation itself always starts off. Editing approval or one-shot behavior pauses the session so Resume explicitly adopts it.
 
 ## Prompts and presets
 
@@ -44,6 +66,7 @@ Prompt wording influences Claude’s behavior; the plugin does not independently
 | Ready when you are | Installed and disabled |
 | Claude is working | Generation has been observed |
 | Continuing in … | Stable completion was confirmed and a send is scheduled |
+| Waiting for your approval | Approval mode has reached its deadline; no send occurs until approved |
 | Sending Continue | Final checks passed and a submission is in progress |
 | Waiting for Claude | One submission was made; generation acknowledgment is pending |
 | Waiting for usage reset | A usage notice is visible; sends are suspended |

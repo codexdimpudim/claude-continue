@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.2.0 preview — 2026-10-12
+
+- Added a once-per-profile greeting and five-step onboarding tour, with Skip and manual replay.
+- Added Paranoid mode with a tenth-of-a-second countdown, target time, and progress; usage waits display the next passive check.
+- Added Terracotta, Ocean, Forest, Lavender, and Light themes, compact view, position reset, recent activity, and Option + Shift + P to pause.
+- Added approval before every continuation and continue-once mode. Appearance changes preserve an active session; automation changes pause it.
+- Recognize a completed fast reply even if its Stop control was missed between samples. Uncertain unchanged replies still pause without resending.
+- Cancel a pending send if the response changes or its completion marker disappears. Preserve submitted composer text if delivery is not acknowledged.
+- Keep active renderer timers unthrottled and restore their prior setting on pause, navigation, renderer exit, stale heartbeat, and app quit. Extended the native heartbeat lease to tolerate a throttled timer.
+- Stage update sources before replacing them and roll back failed replacements. Check app hashes before update shutdown. Find the managed copy even when a recorded PID was reused after reboot.
+- Preserve custom continuation text, normalize malformed saved settings, and prevent enlarged cards from moving below the window edge.
+- 86 JavaScript regression tests plus five Python update tests pass locally (91 total). Long unattended use and real quota-reset recovery remain unverified.
+
 ## 2.1.1 preview — 2026-10-12
 
 - Fixed a usage wait entered from idle losing its continuation intent when usage returned.

@@ -10,7 +10,7 @@ Use **Check Compatibility.command** to inspect your app before installing. It do
 
 ## First installation
 
-1. Download the current preview ZIP from [Releases](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.1.1-preview.1).
+1. Download the current preview ZIP from [Releases](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.0-preview.1).
 2. Extract it and keep every file in the same folder. Avoid running launchers from inside a ZIP viewer.
 3. Finish active work and quit Claude.
 4. Double-click **Install.command**. If macOS prevents it from opening, inspect the package and use your normal approved method to open it. Do not disable system security settings to install this preview.
@@ -31,8 +31,8 @@ If launch verification times out, let the app finish loading, open an existing c
 1. Download and extract the new preview package.
 2. Finish active work in the local Claude copy.
 3. Run **Update.command** from the newly downloaded folder, not from the installed Runtime directory.
-4. The updater requests graceful shutdown, verifies compatibility, backs up the previous sources, replaces the plugin sources, and reopens the local copy.
-5. Your prompt preferences remain saved. Automation starts off after the update.
+4. The updater checks source completeness and app compatibility before graceful shutdown, stages all replacements and backups, replaces the plugin sources, and reopens the local copy. A replacement failure restores the previous source files.
+5. Your prompt, themes, and mode preferences remain saved. Automation starts off after the update. The new welcome tour appears only if it has never been shown in this profile.
 
 The source updater does not re-sign or upgrade Claude itself. A vendor app update needs a fresh compatibility investigation.
 

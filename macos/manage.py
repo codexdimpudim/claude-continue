@@ -198,24 +198,28 @@ def load_manifest():
     return data
 
 def own_pid():
+    executable=str(RUNTIME/'Claude.app/Contents/MacOS/Claude')
     try:
-        pid=json.loads((RUNTIME/'status.json').read_text())['pid']
-        command=run('/bin/ps','-p',str(int(pid)),'-o','comm=').stdout.decode().strip()
-        return int(pid) if command==str(RUNTIME/'Claude.app/Contents/MacOS/Claude') else None
-    except (OSError,ValueError,KeyError,subprocess.SubprocessError):
-        for line in run('/bin/ps','-axo','pid=,comm=').stdout.decode().splitlines():
-            parts=line.strip().split(None,1)
-            if len(parts)==2 and parts[1]==str(RUNTIME/'Claude.app/Contents/MacOS/Claude'):
-                return int(parts[0])
-        return None
+        pid=int(json.loads((RUNTIME/'status.json').read_text())['pid'])
+        command=run('/bin/ps','-p',str(pid),'-o','comm=').stdout.decode().strip()
+        if command==executable:return pid
+    except (OSError,ValueError,TypeError,KeyError,subprocess.SubprocessError):pass
+    # A stale PID may already belong to another valid process after a reboot.
+    for line in run('/bin/ps','-axo','pid=,comm=').stdout.decode().splitlines():
+        parts=line.strip().split(None,1)
+        if len(parts)==2 and parts[1]==executable:return int(parts[0])
+    return None
 
-def launch():
-    data=load_manifest();original=pathlib.Path(data['original']['path'])
+def verify_installed_app(data):
+    original=pathlib.Path(data['original']['path'])
     version=plistlib.loads((original/'Contents/Info.plist').read_bytes())['CFBundleShortVersionString']
     if version!=data['claudeVersion'] or digest(original/'Contents/Resources/app.asar')!=data['original']['asarHash']:
         raise RuntimeError('Original Claude was updated. Compatibility requires a new check; launch paused.')
     if modified_files(RUNTIME/'Claude.app')!=data['patchedHashes']:
         raise RuntimeError('Local app changed or updated. Launch paused; use Restore Claude.command.')
+
+def launch():
+    data=load_manifest();verify_installed_app(data)
     if own_pid():
         try:
             health=json.loads((RUNTIME/'status.json').read_text())
@@ -252,6 +256,7 @@ def update():
     files=['lib/engine.js','lib/renderer.js','plugins/auto-continue.js','macos/loader.cjs','macos/manage.py','macos/compatibility.json']
     if any(not (PACKAGE/name).is_file() or not (RUNTIME/name).is_file() for name in files):
         raise RuntimeError('Plugin source files are missing. Keep the complete update folder together.')
+    verify_installed_app(data)
     # Only the plugin sources change. The signed app and account preferences stay intact.
     if own_pid():
         print('Closing the local copy to apply the update…',flush=True)
@@ -263,12 +268,26 @@ def update():
     ensure_closed()
     stamp=datetime.datetime.now().strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:6]
     backup=BASE/'Backups'/('Plugin-'+stamp)
-    for relative in files:
-        target=RUNTIME/relative;prior=backup/relative
-        prior.parent.mkdir(parents=True,exist_ok=True)
-        shutil.copy2(target,prior)
-        replacement=target.with_name(target.name+'.update')
-        shutil.copy2(PACKAGE/relative,replacement);replacement.replace(target)
+    staging=BASE/('Update-'+stamp)
+    replaced=[]
+    try:
+        # Stage every replacement and backup before changing installed sources.
+        for relative in files:
+            target=RUNTIME/relative;prior=backup/relative;replacement=staging/relative
+            prior.parent.mkdir(parents=True,exist_ok=True);replacement.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copy2(target,prior);shutil.copy2(PACKAGE/relative,replacement)
+        try:
+            for relative in files:
+                (staging/relative).replace(RUNTIME/relative);replaced.append(relative)
+        except Exception as error:
+            failures=[]
+            for relative in reversed(replaced):
+                try:shutil.copy2(backup/relative,RUNTIME/relative)
+                except OSError:failures.append(relative)
+            if failures:raise RuntimeError('Update failed and some files could not be restored. Backup: '+str(backup)) from error
+            raise RuntimeError('Update failed; installed plugin sources were restored.') from error
+    finally:
+        shutil.rmtree(staging,ignore_errors=True)
     log('plugin-updated')
     launch()
 
