@@ -40,9 +40,9 @@ The earliest signed-copy attempts failed as described in `ARCHITECTURE.md`. They
 
 ## Not verified / limitations
 
-Live testing was limited by exhausted usage. An initial continuation attempt detected generation but paused on an unfamiliar warning; the later classifier fixes were tested separately. No sending harness is distributed. **Successful end-to-end automatic continuation and real quota-reset recovery are not verified.** Simulated tests are not a substitute for those checks.
+Live testing was limited by exhausted usage. An initial continuation attempt detected generation but paused on an unfamiliar warning; the later classifier fixes were tested separately. No sending harness is distributed. **Sustained end-to-end loops and real quota-reset recovery are not verified.** Simulated tests are not a substitute for those checks.
 
-The actual “You are out of free messages … until … Upgrade” notice was inspected and added to regression coverage. The Waiting for usage reset state was manually confirmed in the real app. Resume and waiting are now distinguished from an unfamiliar error. Actual reset recovery and successful automatic continuation remain unverified.
+The actual “You are out of free messages … until … Upgrade” notice was inspected and added to regression coverage. The Waiting for usage reset state was manually confirmed in the real app. Resume and waiting are now distinguished from an unfamiliar error. Actual reset recovery remains unverified. See the later live sequence below for the confirmed continuation attempt.
 
 Not completed: a multihour unattended soak; actual quota reset; physical network-disconnect recovery; Chrome Remote Desktop interaction; actual app upgrade; separate Apple Silicon hardware; all enterprise/Keychain integrations; full-screen/resize visual acceptance across displays (the card and settings were visually checked in a browser fixture); live response-completion-selector validation after a successful response; a fresh full reinstall cycle. These remain acceptance checks before calling the release production-ready.
 
@@ -54,7 +54,7 @@ Uninstall and restoration to the untouched original were exercised during develo
 - Recognized the real free-message quota notice, including reset time joined to the Upgrade label.
 - Prevented ordinary status/alert notifications from causing instant re-pauses, while explicit error banners still pause.
 - Prioritized quota notices over unrelated earlier notifications.
-- Found sibling response toolbars within one assistant turn; never borrowed an older response's Copy control or a code-copy control. This change has synthetic coverage; live completion remains unverified.
+- Found sibling response toolbars within one assistant turn; never borrowed an older response's Copy control or a code-copy control. This change has synthetic coverage, and the later live sequence confirmed response completion detection.
 - Disabled automation stays disabled during manual composer interaction.
 - Renderer heartbeat health survives navigation, preventing false launch-verification failures.
 - Added a source-only Update launcher for installed copies.
@@ -63,4 +63,4 @@ The update tests verify source backups, preservation of signed app files, and re
 
 ## Urgent continuation repair
 
-Live operational logs showed quota recovery returning to IDLE without scheduling a continuation. Read-only inspection of the loaded chat showed action-bar-copy outside annotated response bodies. Both cases now have regression coverage. After injection, the real adapter reported completed=true with error=NONE, composer=true, and send=true. A live send is being checked separately; successful tests alone are not an end-to-end claim.
+Live operational logs showed quota recovery returning to IDLE without scheduling a continuation. Read-only inspection of the loaded chat showed action-bar-copy outside annotated response bodies. Both cases now have regression coverage. After injection, the real adapter reported completed=true with error=NONE, composer=true, and send=true. A subsequent live sequence showed Start → countdown → submission → observed generation → stable response completion → another scheduled continuation. The user confirmed the repaired version worked. A later submission reached SEND_NOT_ACKNOWLEDGED and paused, so this remains bounded live evidence rather than a validated unattended loop. No conversation text or account data is included in this report.
