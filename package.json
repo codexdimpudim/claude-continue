@@ -1,0 +1,24 @@
+{
+  "name": "claude-continue",
+  "version": "2.1.0",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "build": "python3 scripts/build-plugin.py",
+    "test:update": "python3 tests/update.test.py"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0",
+    "@sinonjs/fake-timers": "15.0.0"
+  },
+  "description": "Automatic continuation controls for Claude Desktop on macOS.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/codexdimpudim/claude-continue.git"
+  },
+  "homepage": "https://github.com/codexdimpudim/claude-continue",
+  "bugs": {
+    "url": "https://github.com/codexdimpudim/claude-continue/issues"
+  }
+}

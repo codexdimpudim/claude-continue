@@ -1,0 +1,30 @@
+name: Tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build
+      - name: Verify committed bundle is current
+        run: git diff --exit-code -- plugins/auto-continue.js
+      - run: npm test
+      - run: npm run test:update
+      - name: Validate Python and launch scripts
+        run: |
+          python3 -m py_compile macos/manage.py scripts/build-plugin.py
+          for launcher in *.command; do bash -n "$launcher"; done

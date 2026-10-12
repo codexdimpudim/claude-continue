@@ -1,0 +1,16 @@
+node_modules/
+__pycache__/
+*.py[cod]
+.DS_Store
+*.log
+.env
+.env.*
+*.app/
+*.asar
+*.asar.unpacked/
+dist/
+work/
+status.json
+manifest.json
+shutdown.json
+reload-plugin.json
