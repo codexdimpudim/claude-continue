@@ -10,7 +10,7 @@ Use **Check Compatibility.command** to inspect your app before installing. It do
 
 ## First installation
 
-1. Download the current preview ZIP from [Releases](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.0-preview.1).
+1. Download the current preview ZIP from [Releases](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.1-preview.1).
 2. Extract it and keep every file in the same folder. Avoid running launchers from inside a ZIP viewer.
 3. Finish active work and quit Claude.
 4. Double-click **Install.command**. If macOS prevents it from opening, inspect the package and use your normal approved method to open it. Do not disable system security settings to install this preview.

@@ -1,10 +1,10 @@
 # Validation report
 
-Build: `2.2.0-mac-preview`, based on Claude Desktop `2.31226.1` / Electron `44.4.3`.
+Build: `2.2.1-mac-preview`, based on Claude Desktop `2.31226.1` / Electron `44.4.3`.
 
 ## Automated checks
 
-The test suite covers 86 JavaScript cases across the pure state machine, synthetic DOM, and mocked Electron loader, plus five Python update tests (91 total). Run the commands in README.md to reproduce the automated checks. Tests do not contact Claude.
+The test suite covers 98 JavaScript cases across the pure state machine, synthetic DOM, and mocked Electron loader, plus five Python update tests (103 total). Run the commands in README.md to reproduce the automated checks. Tests do not contact Claude.
 
 Verified behaviors include:
 
@@ -74,3 +74,13 @@ Additional automated cases cover fast replies without a sampled Stop control, ch
 The actual new tour, theme controls, settings layout, and countdown were exercised in a browser fixture using the real plugin sources. That fixture submits no Claude requests. Real app loading is checked separately after source deployment; this version does not claim a new live quota-reset or overnight soak result. The earlier successful 2.1.1 continuation remains the bounded live evidence described above.
 
 After the 2.2.0 source update, the real managed app reopened and the launcher verified one widget, composer, and Send control. Native health reported loader 2.2.0, renderer 2.2.0-mac-preview, DISABLED, tutorialVisible=true, and no power assertion. No Claude request was sent to perform this update verification. This confirms deployment and first-tour visibility in the actual renderer, not new end-to-end continuation or overnight validation.
+
+## October 13 overnight quota-recovery failure
+
+The real local log showed WAITING_FOR_USAGE_RESET → CHECKING_AVAILABILITY at 12:20:30 AM America/New_York on October 13, followed by RECOVERING → COUNTDOWN at 12:20:35 and PAUSED / COMPLETION_UNCERTAIN half a second later. Two manual Resume attempts also immediately paused for the same reason. This is evidence of a real failed reset recovery, not a successful soak result.
+
+The quota had interrupted generation, so no finished-response toolbar was available after the warning cleared. The previous implementation incorrectly required normal completion for that interrupted task. The repair gives verified quota recovery a scoped interrupted-task path with an additional ten-second stable-idle check. Explicit Start/Resume can also resume the already-stuck chat after ten idle seconds. Ordinary completion, unknown network delivery, generation detection, drafts, warning checks, and no-duplicate-submit rules remain enforced. Latest user-turn and response fingerprints are pinned in memory during submission.
+
+Eleven new cases cover the logged overnight timing, missing toolbar through actual renderer insertion/click in a synthetic DOM, manual Resume, no-text user tasks, renewed generation, task changes, network errors, and quota returning before submission. Synthetic tests do not contact Claude. A new actual reset recovery still requires live observation.
+
+The authorized one-continuation live test ran in the user-selected existing chat on October 13. Before submission, native diagnostics reported completed=false, resumable=true, ready=true, no warning, no generation, and no human draft. At 5:28:35 PM America/New_York the one-send session was activated; after stable-idle verification it entered COUNTDOWN at 5:28:46, submitted at 5:28:56, and observed GENERATING at 5:28:57. The test immediately paused automation after that single acknowledged send. It used the saved continuation behavior and did not change prompt or limit preferences. The temporary harness was removed from the installed plugin and is not distributed. This confirms live resumption of the already-interrupted chat. A fresh real quota-reset cycle and sustained unattended looping remain unverified.

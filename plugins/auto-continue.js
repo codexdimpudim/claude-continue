@@ -59,6 +59,11 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
     if(warnings.some(text=>/\berror\b|\bfailed\b|unable to|cannot|can't|something went wrong|try again/i.test(text))) return {kind:'UNKNOWN'};
     return {kind:unknownError?'UNKNOWN':null};
   }
+  // An interrupted task is not a completed reply. Only explicit Start or
+  // verified quota recovery can resume it without a completion toolbar.
+  function continuationAllowed(s,basis='complete') {
+    return s.ready&&!s.generating&&!s.error&&(s.completed||['explicit-start','quota-recovery'].includes(basis));
+  }
   class Engine {
     constructor(options={},log=()=>{}) {
       this.options=config(options);this.log=log;this.state='DISABLED';this.epoch=0;
@@ -71,30 +76,31 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
       if(!STATES.includes(next)||(!['PAUSED','DISABLED','STOPPED','ERROR'].includes(next)&&!edges[this.state]?.includes(next))) throw Error(`Invalid transition ${this.state} -> ${next}`);
       const from=this.state;this.state=next;this.log({event:'state',from,to:next,reason});
     }
-    cancel(next='PAUSED',reason='HUMAN_CONTROL') {this.epoch++;this.deadline=null;this.nextCheck=null;this.awaitingConfirmation=false;this.lastReason=reason;this.transition(next,reason);}
+    cancel(next='PAUSED',reason='HUMAN_CONTROL') {this.epoch++;this.deadline=null;this.nextCheck=null;this.awaitingConfirmation=false;this.verifyingInterrupted=false;this.lastReason=reason;this.transition(next,reason);}
     arm(conversation,now=Date.now(),continueExisting=false) {
       if(!conversation){this.cancel('PAUSED','CONVERSATION_UNKNOWN');return;}
       if(!['DISABLED','PAUSED','STOPPED','ERROR'].includes(this.state))this.cancel();
       this.epoch++;this.conversation=conversation;this.stats.start=now;this.stats.count=0;
       this.lastHash=null;this.repeats=0;this.emptyCount=0;this.lastError=null;this.nextCheck=null;
-      this.resumeNeeded=false;this.kickoffRequested=continueExisting;this.quietSince=null;this.quietHash=null;this.lastReason=null;this.awaitingConfirmation=false;
+      this.resumeNeeded=false;this.kickoffRequested=continueExisting;this.quietSince=null;this.quietHash=null;this.lastReason=null;this.awaitingConfirmation=false;this.verifyingInterrupted=false;this.recoveryBasis=null;this.quietTaskHash=null;
       this.transition('IDLE','USER_ENABLED');
     }
     inactive(){return ['DISABLED','PAUSED','STOPPED','ERROR'].includes(this.state);}
     wait(kind,s,now) {
       if(!['RATE_LIMIT','NETWORK','SERVER'].includes(kind)){this.lastError=kind;this.cancel('PAUSED',kind);return;}
       if(kind!=='RATE_LIMIT'&&['SENDING_CONTINUE','WAITING_FOR_GENERATION'].includes(this.state)) {this.failed('DELIVERY_UNCERTAIN');return;}
-      this.resumeNeeded=(this.kickoffRequested&&!!s.hash)||['GENERATING','FINISHED','COUNTDOWN','SENDING_CONTINUE','WAITING_FOR_GENERATION','RECOVERING'].includes(this.state)||this.resumeNeeded===true;
-      this.epoch++;this.deadline=null;this.awaitingConfirmation=false;this.lastError=kind;this.verifyAt=null;
+      this.resumeNeeded=(this.kickoffRequested&&(!!s.hash||s.hasUserTurn===true))||['GENERATING','FINISHED','COUNTDOWN','SENDING_CONTINUE','WAITING_FOR_GENERATION','RECOVERING'].includes(this.state)||this.resumeNeeded===true;
+      this.epoch++;this.deadline=null;this.awaitingConfirmation=false;this.verifyingInterrupted=false;this.lastError=kind;this.verifyAt=null;this.recoveryQuietSince=null;
+      this.recoveryBasis=kind==='RATE_LIMIT'&&this.resumeNeeded?'quota-recovery':null;
       if(kind==='RATE_LIMIT') {
         this.transition('RATE_LIMITED',kind);this.stats.usageWaits++;this.poll=0;
         this.reset=resetTime(s.resetText||'',now);this.transition('WAITING_FOR_USAGE_RESET','SENDS_SUSPENDED');
         this.nextCheck=this.reset?Math.max(now+120000,this.reset.timestamp+30000):now+this.options.pollMinutes[0]*60000;
       } else {this.transition('NETWORK_ERROR',kind);this.nextCheck=now+this.options.networkRetryMs;}
     }
-    schedule(now,extra=0,hash=this.quietHash) {
+    schedule(now,extra=0,hash=this.quietHash,basis='complete',taskHash) {
       if(this.options.maxConsecutive!=='unlimited'&&this.stats.count>=this.options.maxConsecutive) return this.cancel('PAUSED','MAX_CONTINUATIONS');
-      this.countdownStarted=now;this.scheduledHash=hash;this.awaitingConfirmation=false;this.confirmed=false;
+      this.countdownStarted=now;this.scheduledHash=hash;this.scheduledTaskHash=taskHash;this.sendBasis=basis;this.verifyingInterrupted=false;this.awaitingConfirmation=false;this.confirmed=false;
       this.deadline=Math.max(now+Math.max(extra,this.options.delaySeconds*1000),this.lastSend+this.options.minCooldownMs);
       this.transition('COUNTDOWN','CONTINUATION_SCHEDULED');
     }
@@ -125,38 +131,46 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
       const fastReply=this.state==='WAITING_FOR_GENERATION'&&s.completed&&s.hash&&s.hash!==this.scheduledHash;
       if(s.generating||fastReply) {
         if(this.state!=='GENERATING'){this.epoch++;this.deadline=null;this.awaitingConfirmation=false;this.transition('GENERATING',fastReply?'FAST_RESPONSE_CONFIRMED':'STOP_CONTROL_VISIBLE');}
-        this.kickoffRequested=false;this.observedHash=s.hash;this.quietSince=null;return null;
+        this.kickoffRequested=false;this.verifyingInterrupted=false;this.recoveryBasis=null;this.observedHash=s.hash;this.quietSince=null;return null;
       }
       if(!s.ready){this.cancel('PAUSED','UI_CHANGED');return null;}
       if(this.state==='IDLE'&&this.kickoffRequested){
-        if(!s.hash){this.cancel('PAUSED','NO_RESPONSE_TO_CONTINUE');return null;}
-        if(!s.completed){this.cancel('PAUSED','COMPLETION_UNCERTAIN');return null;}
-        if(this.quietHash!==s.hash||this.quietSince==null){this.quietHash=s.hash;this.quietSince=now;return null;}
-        if(now-this.quietSince<this.options.quietMs)return null;
-        this.kickoffRequested=false;this.schedule(now,0,s.hash);return null;
+        if(!s.hash&&!s.hasUserTurn){this.cancel('PAUSED','NO_RESPONSE_TO_CONTINUE');return null;}
+        this.verifyingInterrupted=!s.completed;
+        if(this.quietHash!==s.hash||this.quietTaskHash!==s.taskHash||this.quietSince==null){this.quietHash=s.hash;this.quietTaskHash=s.taskHash;this.quietSince=now;return null;}
+        if(now-this.quietSince<Math.max(this.options.quietMs,s.completed?0:10000))return null;
+        this.kickoffRequested=false;this.schedule(now,0,s.hash,s.completed?'complete':'explicit-start',s.taskHash);return null;
       }
       if(this.state==='RECOVERING') {
         if(now<this.verifyAt)return null;
         this.nextCheck=null;this.lastError=null;
-        if(this.resumeNeeded){this.resumeNeeded=false;this.kickoffRequested=false;this.schedule(now,0,s.hash);}else this.transition('IDLE','AVAILABILITY_VERIFIED');
+        if(this.resumeNeeded){
+          if(!s.completed){
+            if(this.recoveryBasis!=='quota-recovery'){this.cancel('PAUSED','COMPLETION_UNCERTAIN');return null;}
+            this.verifyingInterrupted=true;
+            if(this.recoveryHash!==s.hash||this.recoveryTaskHash!==s.taskHash||this.recoveryQuietSince==null){this.recoveryHash=s.hash;this.recoveryTaskHash=s.taskHash;this.recoveryQuietSince=now;return null;}
+            if(now-this.recoveryQuietSince<Math.max(10000,this.options.quietMs))return null;
+          }
+          this.resumeNeeded=false;this.kickoffRequested=false;this.schedule(now,0,s.hash,s.completed?'complete':'quota-recovery',s.taskHash);
+        }else this.transition('IDLE','AVAILABILITY_VERIFIED');
         return null;
       }
       if(this.state==='GENERATING') {
-        if(this.quietHash!==s.hash||this.quietSince==null){this.quietHash=s.hash;this.quietSince=now;return null;}
+        if(this.quietHash!==s.hash||this.quietTaskHash!==s.taskHash||this.quietSince==null){this.quietHash=s.hash;this.quietTaskHash=s.taskHash;this.quietSince=now;return null;}
         if(now-this.quietSince<this.options.quietMs)return null;
         if(!s.completed){if(now-this.quietSince>15000)this.cancel('PAUSED','COMPLETION_UNCERTAIN');return null;}
         this.transition('FINISHED','STABLE_COMPLETION_CONFIRMED');this.stats.lastSuccess=now;
         if(!s.hash){this.emptyCount++;if(this.emptyCount>1){this.cancel('PAUSED','EMPTY_RESPONSE_LOOP');return null;}}else this.emptyCount=0;
         this.repeats=s.hash&&s.hash===this.lastHash?this.repeats+1:0;this.lastHash=s.hash;
         if(this.repeats>=2){this.cancel('PAUSED','DUPLICATE_RESPONSE_LOOP');return null;}
-        this.schedule(now,this.emptyCount?30000:0);return null;
+        this.schedule(now,this.emptyCount?30000:0,s.hash,'complete',s.taskHash);return null;
       }
-      if(this.state==='COUNTDOWN'&&!s.completed){this.cancel('PAUSED','COMPLETION_UNCERTAIN');return null;}
-      if(this.state==='COUNTDOWN'&&s.hash!==this.scheduledHash){this.cancel('PAUSED','RESPONSE_CHANGED');return null;}
+      if(this.state==='COUNTDOWN'&&!continuationAllowed(s,this.sendBasis)){this.cancel('PAUSED','COMPLETION_UNCERTAIN');return null;}
+      if(this.state==='COUNTDOWN'&&(s.hash!==this.scheduledHash||s.taskHash!==this.scheduledTaskHash)){this.cancel('PAUSED','RESPONSE_CHANGED');return null;}
       if(this.state==='COUNTDOWN'&&now>=this.deadline){
         if(this.options.confirmBeforeSend&&!this.confirmed&&!this.awaitingConfirmation){this.awaitingConfirmation=true;this.log({event:'confirmation-needed'});return null;}
         if(this.awaitingConfirmation)return null;
-        this.transition('SENDING_CONTINUE','PREFLIGHT_PASSED');return {type:'send',epoch:this.epoch,conversation:this.conversation,hash:this.scheduledHash};}
+        this.transition('SENDING_CONTINUE','PREFLIGHT_PASSED');return {type:'send',epoch:this.epoch,conversation:this.conversation,hash:this.scheduledHash,taskHash:this.scheduledTaskHash,basis:this.sendBasis};}
       if(this.state==='WAITING_FOR_GENERATION'&&now>=this.sendDeadline)this.failed('SEND_NOT_ACKNOWLEDGED');
       return null;
     }
@@ -168,7 +182,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
     }
     failed(reason='SEND_FAILED') {this.stats.failures++;this.lastError=reason;this.cancel('PAUSED',reason);}
   }
-  return {Engine,STATES,defaults,config,resetTime,classify};
+  return {Engine,STATES,defaults,config,resetTime,classify,continuationAllowed};
 });
 
 }
@@ -178,8 +192,8 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
   const ID='claude-auto-continue-plugin', KEY='claude_auto_continue_settings';
   if(window.claudeAutoContinue&&!document.getElementById(ID))window.claudeAutoContinue.dispose();
   if(window.claudeAutoContinue||document.getElementById(ID)||!document.body)return;
-  const {Engine,config,classify}=window.ClaudeAutoContinueEngine;
-  const VERSION='2.2.0-mac-preview';
+  const {Engine,config,classify,continuationAllowed}=window.ClaudeAutoContinueEngine;
+  const VERSION='2.2.1-mac-preview';
   const PRESETS={
     Default:'Continue working on the current project from exactly where you left off. Preserve completed work. Test your latest changes, fix any problems you find, then proceed to the next highest-priority unfinished task. Do not restart the project or redo completed work.',
     Simple:'Continue.',
@@ -324,6 +338,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
   function snapshot(){
     const composer=unique(SELECTORS.composer), send=sendControl(),stop=unique(SELECTORS.stop);
     const responses=all(SELECTORS.assistant),response=responses.at(-1);
+    const userTurn=all('[data-message-author-role="user"], [data-testid="user-message"]').at(-1);
     // Toolbars can be siblings of the response body. Stop at another assistant
     // response so an older turn's Copy button can never complete the latest turn.
     let area=response?.closest('[data-message-author-role="assistant"]')||response?.closest('[data-testid="assistant-message"]')||response?.parentElement;
@@ -343,8 +358,8 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
     if(ownedDraft?.submitted&&ownedDraft.node===composer&&!text.trim())ownedDraft=null;
     const controlsAmbiguous=all(SELECTORS.stop).length>1||all(SELECTORS.send).length>1;
     return {conversation:conversation(),composer,send,direct:direct.length===1?direct[0]:null,
-      generating:!!stop,ready:!!composer&&usable(composer)&&!!send&&!controlsAmbiguous,
-      completed,hash:fingerprint(response?.textContent||''),error:error.kind,resetText:error.resetText,
+      generating:!!stop||!!(response&&(response.matches('[data-is-streaming="true"], [aria-busy="true"]')||area?.matches('[data-is-streaming="true"], [aria-busy="true"]')||all('[data-is-streaming="true"], [aria-busy="true"]',area||response).length)),ready:!!composer&&usable(composer)&&!!send&&!controlsAmbiguous,
+      completed,hash:fingerprint(response?.textContent||''),taskHash:fingerprint(userTurn?.textContent||''),hasUserTurn:!!userTurn,error:error.kind,resetText:error.resetText,
       humanDraft:!!text.trim()&&!(ownedDraft&&ownedDraft.node===composer&&ownedDraft.text===text),warnings: warnings.length};
   }
   function clearOwned(){if(!ownedDraft)return;const draft=ownedDraft;ownedDraft=null;if(!draft.submitted&&value(draft.node)===draft.text){try{writing=true;setValue(draft.node,'');}catch{log({event:'draft-cleanup-failed'});}finally{writing=false;}}}
@@ -352,7 +367,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
     armRequest++;arming=false;engine.cancel(state,reason);if(pending){clearTimeout(pending);pending=null;}clearOwned();
     if(releaseLock){releaseLock();releaseLock=null;}check.checked=false;render();pulse();
   }
-  async function arm(){
+  async function arm(once=false){
     if(!el('ac-tour').hidden){el('ac-tour-next').focus();return;}
     if(arming||!engine.inactive())return;
     const request=++armRequest;arming=true;render();
@@ -361,7 +376,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
       if(request!==armRequest||disposed)return;
       arming=false;
       if(!lock){cancel('PAUSED','ANOTHER_WINDOW_ACTIVE');return;}
-      engine.options=engineOptions();engine.arm(conversation(),Date.now(),true);check.checked=!engine.inactive();
+      engine.options=engineOptions();if(once===true)engine.options.maxConsecutive=1;engine.arm(conversation(),Date.now(),true);check.checked=!engine.inactive();
       if(engine.inactive()){render();return;}
       const held=new Promise(resolve=>{releaseLock=resolve;});tick();render();await held;
     });}catch{arming=false;cancel('PAUSED','WINDOW_LOCK_FAILED');}
@@ -374,7 +389,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
     if(!document.execCommand('insertText',false,text))throw Error('EDITOR_INSERT_FAILED');
     node.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));
   }
-  function valid(action,s){return !disposed&&releaseLock&&engine.state==='SENDING_CONTINUE'&&engine.epoch===action.epoch&&s.conversation===action.conversation&&!s.error&&!s.generating&&s.ready&&s.completed&&!s.humanDraft&&s.hash===action.hash;}
+  function valid(action,s){return !disposed&&releaseLock&&engine.state==='SENDING_CONTINUE'&&engine.epoch===action.epoch&&s.conversation===action.conversation&&!s.error&&!s.generating&&continuationAllowed(s,action.basis)&&!s.humanDraft&&s.hash===action.hash&&s.taskHash===action.taskHash;}
   function send(action){
     let s=snapshot();
     if(!valid(action,s)){cancel('PAUSED','SEND_PREFLIGHT_CHANGED');return;}
@@ -416,14 +431,14 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
   }
   const labels={DISABLED:'Ready when you are',IDLE:'Idle — waiting for a response',GENERATING:'Claude is working',FINISHED:'Response finished',SENDING_CONTINUE:'Sending Continue',WAITING_FOR_GENERATION:'Waiting for Claude',RATE_LIMITED:'Usage Limit Reached',WAITING_FOR_USAGE_RESET:'Waiting for usage reset',CHECKING_AVAILABILITY:'Checking Availability',NETWORK_ERROR:'Waiting for connection/service',RECOVERING:'Verifying availability',PAUSED:'Paused',ERROR:'Error',STOPPED:'Stopped'};
   function render(){
-    const status=engine.awaitingConfirmation?'Waiting for your approval':engine.state==='PAUSED'&&engine.lastReason==='UI_CHANGED'?'Claude UI changed — paused':engine.state==='PAUSED'&&engine.lastReason==='DUPLICATE_RESPONSE_LOOP'?'Possible continuation loop — paused':engine.state==='COUNTDOWN'?`Continuing in ${Math.max(0,Math.ceil((engine.deadline-Date.now())/1000))}s`:labels[engine.state];
+    const status=engine.verifyingInterrupted?'Verifying interrupted reply':engine.awaitingConfirmation?'Waiting for your approval':engine.state==='PAUSED'&&engine.lastReason==='UI_CHANGED'?'Claude UI changed — paused':engine.state==='PAUSED'&&engine.lastReason==='DUPLICATE_RESPONSE_LOOP'?'Possible continuation loop — paused':engine.state==='COUNTDOWN'?`Continuing in ${Math.max(0,Math.ceil((engine.deadline-Date.now())/1000))}s`:labels[engine.state];
     if(el('ac-state').textContent!==status)el('ac-state').textContent=status;
     widget.classList.toggle('ac-active-glow',!engine.inactive());widget.classList.toggle('ac-counting',engine.state==='COUNTDOWN');
     el('ac-cancel-btn').textContent=arming?'Starting…':engine.inactive()?(engine.state==='DISABLED'||engine.state==='STOPPED'?'Start':'Resume'):engine.state==='COUNTDOWN'?'Cancel countdown':'Pause';
     const reasons={RESPONSE_CHANGED:'The response changed during the countdown. Review the chat before resuming.',SEND_NOT_ACKNOWLEDGED:'The last send was not confirmed. Check the chat before resuming.',DELIVERY_UNCERTAIN:'Connection was interrupted after sending. Check the chat before resuming.',NO_RESPONSE_TO_CONTINUE:'There is no assistant response yet. Send your first request, then press Start.',TUTORIAL_OPENED:'Quick tour opened. Resume after the tour when you are ready.',KEYBOARD_PAUSE:'Paused with the keyboard shortcut. Resume when you are ready.',HUMAN_CONTROL:'Paused while you interact with the chat. Resume when ready.',UNKNOWN:'Claude is showing a warning. Resolve it, then choose Resume.',UI_CHANGED:'Chat controls are unavailable. Open a chat and try Resume.',COMPLETION_UNCERTAIN:'Could not confirm the response finished. Check Claude’s reply and controls before resuming.',CONVERSATION_UNKNOWN:'Open an existing chat, then choose Start.',CONVERSATION_CHANGED:'You changed chats. Resume to enable this chat.',SETTINGS_CHANGED:'Settings saved. Resume when you are ready.',WINDOW_LOCK_UNAVAILABLE:'Window coordination is unavailable. Reopen the local app.',ANOTHER_WINDOW_ACTIVE:'Another window is running Auto Continue. Pause it first.',WINDOW_LOCK_FAILED:'Could not coordinate windows. Reopen the local app.',WAKE_REVALIDATION_REQUIRED:'Your Mac woke up. Check the chat, then Resume.',MAX_CONTINUATIONS:'Session continuation limit reached. Resume starts a new session.',MAX_RUNTIME:'Session time limit reached. Resume starts a new session.',DUPLICATE_RESPONSE_LOOP:'Repeated responses detected. Review the chat before resuming.',HUMAN_DRAFT:'Your message is still in the composer. Send or clear it first.'};
-    const detail=engine.awaitingConfirmation?'The timer is finished. Approve this continuation to send, or Cancel countdown to pause.':engine.inactive()?(reasons[engine.lastReason]|| (engine.state==='DISABLED'?'Start continues this chat after the countdown, or waits while Claude is working.':engine.state==='STOPPED'?'Automation stopped. Start when you are ready.':`Needs attention: ${(engine.lastReason||engine.lastError||'unknown').toLowerCase().replaceAll('_',' ')}.`)):engine.state==='GENERATING'?'Claude is working. The next continuation waits until the response finishes.':engine.state==='WAITING_FOR_USAGE_RESET'?`No messages will be sent. Next check: ${engine.nextCheck?new Date(engine.nextCheck).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}):'pending'}.`:engine.state==='IDLE'?'Checking the latest response before starting the countdown.':engine.state==='COUNTDOWN'?'You can cancel before the next message is sent.':'Monitoring this chat. You can pause at any time.';
+    const detail=engine.awaitingConfirmation?'The timer is finished. Approve this continuation to send, or Cancel countdown to pause.':engine.inactive()?(reasons[engine.lastReason]|| (engine.state==='DISABLED'?'Start continues this chat after the countdown, or waits while Claude is working.':engine.state==='STOPPED'?'Automation stopped. Start when you are ready.':`Needs attention: ${(engine.lastReason||engine.lastError||'unknown').toLowerCase().replaceAll('_',' ')}.`)):engine.state==='GENERATING'?'Claude is working. The next continuation waits until the response finishes.':engine.state==='WAITING_FOR_USAGE_RESET'?`No messages will be sent. Next check: ${engine.nextCheck?new Date(engine.nextCheck).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}):'pending'}.`:engine.verifyingInterrupted?'The previous reply may have been interrupted. Verifying 10 seconds of idle chat before continuing.':engine.state==='IDLE'?'Checking the latest response before starting the countdown.':engine.state==='COUNTDOWN'?(engine.sendBasis==='complete'?'You can cancel before the next message is sent.':'Resuming the interrupted task. You can cancel before the next message is sent.'):'Monitoring this chat. You can pause at any time.';
     if(el('ac-detail').textContent!==detail)el('ac-detail').textContent=detail;
-    el('ac-summary').textContent=`${engine.stats.count} / ${settings.oneShot?1:settings.maxConsecutive==='unlimited'?'∞':settings.maxConsecutive} continuations`;
+    el('ac-summary').textContent=`${engine.stats.count} / ${engine.options.maxConsecutive==='unlimited'?'∞':engine.options.maxConsecutive} continuations`;
     el('ac-runtime').textContent=`${engine.stats.start?Math.floor((Date.now()-engine.stats.start)/60000):0} min elapsed`;
     el('ac-confirm-btn').hidden=!engine.awaitingConfirmation;
     el('ac-monitor').style.display=settings.paranoid?'block':'none';
@@ -432,6 +447,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
     if(engine.awaitingConfirmation){clock='Awaiting approval';note='No message will be sent until you approve it.';progress=100;}
     else if(target){const remaining=Math.max(0,target-Date.now()),tenths=Math.ceil(remaining/100);clock=`${String(Math.floor(tenths/600)).padStart(2,'0')}:${(tenths%600/10).toFixed(1).padStart(4,'0')}`;note=`${engine.state==='COUNTDOWN'?'Earliest send':'Next passive check'}: ${new Date(target).toLocaleTimeString()}. Final checks still apply.`;progress=engine.state==='COUNTDOWN'?Math.min(100,Math.max(0,100*(Date.now()-engine.countdownStarted)/(engine.deadline-engine.countdownStarted))):0;}
     else if(engine.inactive()){note='Automation is off. Nothing is queued.';}
+    else if(engine.verifyingInterrupted){clock='Verifying idle chat';note='An interrupted reply need not have a finished toolbar. Checking stability before scheduling.';}
     else if(engine.state==='WAITING_FOR_GENERATION'){clock='Already submitted';note='Waiting for acknowledgment. There is no second send queued.';}
     el('ac-clock').classList.toggle('ac-clock-label',!target||engine.awaitingConfirmation);
     if(el('ac-clock').textContent!==clock)el('ac-clock').textContent=clock;
@@ -512,7 +528,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
   const displayTimer=setInterval(()=>{if(settings.paranoid&&!disposed)render();},100);
   function dispose(){if(disposed)return;cancel('STOPPED','DISPOSED');disposed=true;observer.disconnect();clearInterval(timer);clearInterval(displayTimer);listeners.forEach(f=>f());container.remove();delete window.claudeAutoContinue;}
   on(window,'pagehide',dispose);
-  window.claudeAutoContinue={version:VERSION,resume:arm,pause:()=>cancel(),stop:()=>cancel('STOPPED'),dispose,diagnostics:()=>({version:VERSION,tutorialVisible:!el('ac-tour').hidden,theme:settings.theme,paranoid:settings.paranoid,awaitingConfirmation:engine.awaitingConfirmation,state:engine.state,reason:engine.lastReason||null,widgets:document.querySelectorAll('#'+ID).length,composer:!!unique(SELECTORS.composer),send:!!sendControl(),stats:{...engine.stats},signals:(()=>{const s=snapshot();return {generating:s.generating,completed:s.completed,error:s.error,hasResponse:!!s.hash};})()})};
+  window.claudeAutoContinue={version:VERSION,resume:arm,resumeOnce:()=>arm(true),pause:()=>cancel(),stop:()=>cancel('STOPPED'),dispose,diagnostics:()=>({version:VERSION,tutorialVisible:!el('ac-tour').hidden,theme:settings.theme,paranoid:settings.paranoid,awaitingConfirmation:engine.awaitingConfirmation,state:engine.state,reason:engine.lastReason||null,widgets:document.querySelectorAll('#'+ID).length,composer:!!unique(SELECTORS.composer),send:!!sendControl(),stats:{...engine.stats},signals:(()=>{const s=snapshot();return {generating:s.generating,completed:s.completed,error:s.error,hasResponse:!!s.hash,hasUserTurn:s.hasUserTurn,ready:s.ready,humanDraft:s.humanDraft,resumable:continuationAllowed(s,'explicit-start')&&(!!s.hash||s.hasUserTurn)};})()})};
   applyAppearance();clamp();render();pulse();log({event:'initialized',version:VERSION});
   let seen=window.__CLAUDE_CONTINUE_TOUR_SEEN===true;try{seen=seen||localStorage.getItem(TOUR_KEY)==='true';}catch{}
   if(!seen){showTour();markTourSeen();pulse();}

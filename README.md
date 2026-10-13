@@ -19,7 +19,7 @@ Original: 40 seconds · 3840 × 2160 · 60 fps · stereo audio. The inline playe
 
 ![Widget preview](assets/widget-preview.svg)
 
-**Preview release:** 91 automated checks pass. App loading, the widget, Resume, and detection of the real free-message usage notice have been exercised on macOS. A real Start → countdown → send → generation → completed-response sequence was observed, and the user confirmed it worked. Sustained unattended loops and recovery after an actual usage reset remain unverified. See [the test report](TEST-REPORT.md).
+**Preview release:** 103 automated checks pass. App loading, the widget, Resume, and detection of the real free-message usage notice have been exercised on macOS. A real Start → countdown → send → generation → completed-response sequence was observed earlier. After repairing the October 13 overnight failure, a bounded live test also resumed the actual interrupted chat despite its missing completion marker: one continuation was acknowledged and Claude resumed generation. Sustained unattended loops and recovery after an actual usage reset remain unverified. See [the test report](TEST-REPORT.md).
 
 [Installation guide](docs/INSTALLATION.md) · [Usage and settings](docs/USAGE.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Validation report](TEST-REPORT.md) · [Changelog](CHANGELOG.md) · [Code review findings](docs/CODE-REVIEW.md)
 
@@ -43,7 +43,7 @@ The plugin uses a separately patched copy of the real Claude app. Your installed
 ## How continuation works
 
 1. **You explicitly start it.** Opening the app alone never enables automation. Start binds the session to the selected existing chat.
-2. **It checks the latest response.** If Claude is generating, it waits. If the latest response is already complete, it verifies a quiet period before scheduling.
+2. **It checks the latest response.** If Claude is generating, it waits. If the latest response is already complete, it verifies a quiet period before scheduling. Explicit Start on an interrupted task verifies ten idle seconds instead.
 3. **You get a countdown.** The delay is configurable, and you can cancel before submission.
 4. **It checks again before sending.** The chat, controls, generation state, warnings, and composer must still be suitable. Human text is preserved.
 5. **It submits once and looks for generation.** A response-scoped Continue/Resume control may be used; otherwise it inserts your configured prompt and clicks Send. Missing acknowledgment pauses instead of submitting again.
@@ -66,7 +66,7 @@ Unknown app versions stop at the compatibility check. This is an independent pro
 
 ## Install
 
-1. Download and extract the [2.2.0 preview](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.0-preview.1). Keep the folder together.
+1. Download and extract the [2.2.1 preview](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.1-preview.1). Keep the folder together.
 2. Quit Claude and double-click **Install.command**.
 3. Resolve any macOS Keychain prompts yourself. Local signing can trigger them.
 4. Open an existing chat in the local copy. The installer checks for one widget, the composer, and Send.
@@ -80,11 +80,11 @@ Installation creates a versioned backup before patching a separate copy. The ins
 
 On the first launch of this version, a short welcome tour explains the controls. It never opens automatically again in the same Claude profile, including after an update or restart. You can skip it or replay it using **Settings → Quick tour**. Automation remains off during the tour.
 
-Open Settings, choose your continuation prompt and limits, then close Settings. Press **Start** in an existing chat. For a completed response, the card checks it and begins a cancellable countdown. During generation, it waits for Claude to finish. Starting during a usage limit preserves the request and schedules the continuation after availability is verified.
+Open Settings, choose your continuation prompt and limits, then close Settings. Press **Start** in an existing chat. For a completed response, the card checks it and begins a cancellable countdown. During generation, it waits for Claude to finish. Starting during a usage limit preserves the request and schedules the continuation after availability is verified. A quota-interrupted reply may never get a completion toolbar; recovery instead verifies stable idle controls for an extra ten seconds. Start/Resume also handles a previously interrupted task after ten idle seconds, without pretending its reply completed.
 
 Press **Pause** or **Cancel countdown** to cancel pending automation. Press **Resume** after a pause. **Stop** stops the automation without interrupting Claude’s current response. Editing the prompt pauses automation until you resume.
 
-Start explicitly requests continuation of the latest assistant response. An empty chat pauses; send the first request normally. Loading the widget alone never sends a message.
+Start explicitly requests continuation of the latest assistant response. An empty chat pauses; send the first request normally. An existing user request with no assistant text can be resumed explicitly. Loading the widget alone never sends a message.
 
 Defaults are a 10-second delay, 10 continuations, six hours, and a five-second minimum send cooldown. Unlimited limits retain the other safeguards. Uncertain delivery pauses instead of retrying a send.
 

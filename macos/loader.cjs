@@ -35,14 +35,14 @@ function updatePower(){
   if(active&&assertion===null){assertion=powerSaveBlocker.start('prevent-app-suspension');log('power-started');}
   if(!active)release();
 }
-function status(){try{fs.writeFileSync(statusPath,JSON.stringify({pid:process.pid,version:app.getVersion(),loaderVersion:'2.2.0',time:Date.now(),powerAssertion:assertion!==null,renderers:[...health.values()]}),{mode:0o600});}catch{}}
+function status(){try{fs.writeFileSync(statusPath,JSON.stringify({pid:process.pid,version:app.getVersion(),loaderVersion:'2.2.1',time:Date.now(),powerAssertion:assertion!==null,renderers:[...health.values()]}),{mode:0o600});}catch{}}
 function message(contents,args){
   if(!compatible||!allowed(contents))return;
   const detail=args[0];const message=typeof detail?.message==='string'?detail.message:args[1];
   if(typeof message!=='string'||!message.startsWith('[ClaudeAutoContinue] ')||message.length>1500)return;
   let data;try{data=JSON.parse(message.slice(20));}catch{return;}
   if(data.event==='heartbeat'){
-    activeTimers(contents,data.active===true);leases.set(contents.id,{contents,time:Date.now(),active:data.active===true,keepAwake:data.keepAwake===true});if(['DISABLED','IDLE','GENERATING','FINISHED','COUNTDOWN','SENDING_CONTINUE','WAITING_FOR_GENERATION','RATE_LIMITED','WAITING_FOR_USAGE_RESET','CHECKING_AVAILABILITY','NETWORK_ERROR','RECOVERING','PAUSED','ERROR','STOPPED'].includes(data.state))health.set(contents.id,{widgets:data.widgets===1?1:0,composer:data.composer===true,send:data.send===true,state:data.state,rendererVersion:data.rendererVersion==='2.2.0-mac-preview'?data.rendererVersion:undefined,tutorialVisible:data.tutorialVisible===true});
+    activeTimers(contents,data.active===true);leases.set(contents.id,{contents,time:Date.now(),active:data.active===true,keepAwake:data.keepAwake===true});if(['DISABLED','IDLE','GENERATING','FINISHED','COUNTDOWN','SENDING_CONTINUE','WAITING_FOR_GENERATION','RATE_LIMITED','WAITING_FOR_USAGE_RESET','CHECKING_AVAILABILITY','NETWORK_ERROR','RECOVERING','PAUSED','ERROR','STOPPED'].includes(data.state))health.set(contents.id,{widgets:data.widgets===1?1:0,composer:data.composer===true,send:data.send===true,state:data.state,rendererVersion:data.rendererVersion==='2.2.1-mac-preview'?data.rendererVersion:undefined,tutorialVisible:data.tutorialVisible===true});
     updatePower();return;
   }
   if(data.event==='open-logs'){shell.openPath(logDir);return;}
@@ -61,11 +61,11 @@ const compatible=manifest.claudeVersion===app.getVersion();
 async function injectPluginsIntoContents(contents){
   if(shuttingDown||contents.isDestroyed()||!allowed(contents)||!compatible)return;
   try{
-    const meta={claudeVersion:app.getVersion(),loaderVersion:'2.2.0',compatibility:'injection tested; automation preview'};
+    const meta={claudeVersion:app.getVersion(),loaderVersion:'2.2.1',compatibility:'injection tested; automation preview'};
     await contents.executeJavaScript(`window.__CLAUDE_AC_META=${JSON.stringify(meta)};\n${engine}\n${plugin}`);
     const report=await contents.executeJavaScript('window.claudeAutoContinue?.diagnostics()');
-    if(report)health.set(contents.id,{widgets:report.widgets,composer:report.composer,send:report.send,state:report.state,rendererVersion:report.version==='2.2.0-mac-preview'?report.version:undefined,tutorialVisible:report.tutorialVisible===true});
-    log('injection',{widgets:report?.widgets||0,composer:report?.composer===true,send:report?.send===true});status();
+    if(report)health.set(contents.id,{widgets:report.widgets,composer:report.composer,send:report.send,state:report.state,rendererVersion:report.version==='2.2.1-mac-preview'?report.version:undefined,tutorialVisible:report.tutorialVisible===true});
+    log('injection',{widgets:report?.widgets||0,composer:report?.composer===true,send:report?.send===true,generating:report?.signals?.generating===true,completed:report?.signals?.completed===true,resumable:report?.signals?.resumable===true,hasResponse:report?.signals?.hasResponse===true,hasUserTurn:report?.signals?.hasUserTurn===true,ready:report?.signals?.ready===true,error:['RATE_LIMIT','NETWORK','SERVER','UNKNOWN'].includes(report?.signals?.error)?report.signals.error:'NONE',humanDraft:report?.signals?.humanDraft===true});status();
   }catch{log('injection-failed');}
 }
 function attach(contents){

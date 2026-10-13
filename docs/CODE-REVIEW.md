@@ -29,3 +29,7 @@ Themes and compact mode can change during a countdown without resetting it. Chan
 ## Remaining limits
 
 The preview depends on Claude’s page controls and exact desktop build. A completed fast reply must visibly change the response fingerprint; an identical reply remains ambiguous and pauses. Full unattended overnight operation, actual quota-reset recovery, real network-loss recovery, and Apple Silicon hardware have not been established by this review. A disk or permission failure that also prevents rollback is reported with the backup location; no updater can guarantee recovery when the filesystem refuses writes. See [the validation report](../TEST-REPORT.md).
+
+## October 13 recovery correction
+
+The real overnight run exposed a missing case in the completion safeguard added to 2.2.0: an interrupted response was incorrectly required to look completed after a verified quota reset. That caused COMPLETION_UNCERTAIN pauses and blocked manual Resume. Version 2.2.1 now keeps normal completion and interrupted-task resumption distinct. Quota recovery and explicit Start are the only paths allowed to resume an incomplete response, after ten stable idle seconds. New user-turn pinning and streaming/busy checks protect the final handoff. Regression coverage includes the exact failing state sequence and the renderer’s insertion-to-click gap.

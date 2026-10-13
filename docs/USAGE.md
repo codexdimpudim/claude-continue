@@ -10,7 +10,7 @@ A five-step welcome tour explains Start, Pause, settings, and usage waiting. It 
 
 Open an existing chat in the managed local copy. Choose Settings, configure your continuation prompt and limits, close Settings, and press Start.
 
-For a completed assistant response, Start verifies the current response and begins a countdown. During an active response, Start waits for generation to finish. During a usage limit, Start keeps your request pending while availability is checked. Empty chats pause: submit your first request normally before starting automation.
+For a completed assistant response, Start verifies the current response and begins a countdown. During an active response, Start waits for generation to finish. During a usage limit, Start keeps your request pending while availability is checked. Empty chats pause: submit your first request normally before starting automation. If a previous response was interrupted and has no finished toolbar, explicit Start/Resume verifies ten stable idle seconds before continuing. A pending user request with no assistant text can also be resumed explicitly.
 
 An example coding workflow is to ask Claude to implement a focused feature, then enable the plugin while it works. The continuation prompt can ask it to preserve finished work, test changes, fix failures, and move to the next unfinished task. Review the result and use Pause or Stop when you need control.
 
@@ -85,6 +85,6 @@ Runtime limits let an already generating response finish before pausing. Count l
 
 ## Usage waiting
 
-A visible quota notice suspends sending. A recognized local reset time schedules a passive check after a buffer; otherwise the configurable interval sequence is used. The notice must clear and controls must remain usable through a verification interval before continuation is scheduled. No extra request is sent just to probe quota.
+A visible quota notice suspends sending. A recognized local reset time schedules a passive check after a buffer; otherwise the configurable interval sequence is used. The notice must clear and controls must remain usable through a verification interval before continuation is scheduled. A quota-interrupted response can lack a completion toolbar even after the notice clears. This case gets an additional ten-second stable-idle check; its continuation remains cancellable and still requires all normal chat, draft, warning, and generation checks. No extra request is sent just to probe quota.
 
 If the page keeps an outdated notice after the displayed reset time, inspect or refresh the chat yourself. The plugin cannot guarantee that server state will be reflected in a stale page, and it cannot add quota or bypass limits.
