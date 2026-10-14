@@ -38,7 +38,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
   }
   function resetTime(text, now=Date.now()) {
     // Only explicit local clock times. Ambiguous dates/time zones fall back to polling.
-    if (/\b(?:UTC|GMT|[A-Z]{2,4}[SD]T)\b|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}/.test(text)) return null;
+    if (/\b(?:UTC|GMT|[A-Z]{1,3}[SD]T)\b|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}/.test(text)) return null;
     if (!/(?:reset|until|available|use claude again|try again)/i.test(text)) return null;
     const m=text.match(/\b(?:at\s+)?(?:(\d{1,2})(?::([0-5]\d))?\s*(am|pm)|(midnight|noon))(?=\b|Upgrade)/i);
     if(!m) return null;
@@ -49,11 +49,11 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
     if (/tomorrow/i.test(text)||d.getTime()<=now) d.setDate(d.getDate()+1);
     return {timestamp:d.getTime(),category:'visible-status-local-time',confidence:'medium'};
   }
-  function classify({warnings=[],online=true,composerUsable=true,unknownError=false}={}) {
+  function classify({warnings=[],online=true,composerUsable=true,unknownError=false,usageLimitVisible=false}={}) {
     if(!online) return {kind:'NETWORK'};
     // Consider every banner before falling back to an unfamiliar error.
     const limit=warnings.find(text=>/\b(?:usage|session|daily|weekly|message|rate)\s+limits?\b|(?:you.ve|you have) (?:reached|hit) (?:your|the) (?:usage )?limit|out of (?:free |remaining )?(?:messages|usage)|use Claude again at/i.test(text));
-    if(limit) return {kind:'RATE_LIMIT',confidence:2+Number(/reset|until|available again|try again at/i.test(limit))+Number(!composerUsable),resetText:limit};
+    if(limit||usageLimitVisible===true) return {kind:'RATE_LIMIT',confidence:2+Number(usageLimitVisible===true)+Number(/reset|until|available again|try again at/i.test(limit||''))+Number(!composerUsable),resetText:limit||''};
     if(warnings.some(text=>/network (?:error|issue)|connection (?:interrupted|lost|failed|error)|offline|failed to fetch|disconnected/i.test(text))) return {kind:'NETWORK'};
     if(warnings.some(text=>/server (?:error|issue)|overloaded|capacity|temporarily unavailable/i.test(text))) return {kind:'SERVER'};
     if(warnings.some(text=>/\berror\b|\bfailed\b|unable to|cannot|can't|something went wrong|try again/i.test(text))) return {kind:'UNKNOWN'};
@@ -76,38 +76,63 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
       if(!STATES.includes(next)||(!['PAUSED','DISABLED','STOPPED','ERROR'].includes(next)&&!edges[this.state]?.includes(next))) throw Error(`Invalid transition ${this.state} -> ${next}`);
       const from=this.state;this.state=next;this.log({event:'state',from,to:next,reason});
     }
-    cancel(next='PAUSED',reason='HUMAN_CONTROL') {this.epoch++;this.deadline=null;this.nextCheck=null;this.awaitingConfirmation=false;this.verifyingInterrupted=false;this.lastReason=reason;this.transition(next,reason);}
+    cancel(next='PAUSED',reason='HUMAN_CONTROL') {this.epoch++;this.deadline=null;this.nextCheck=null;this.awaitingConfirmation=false;this.verifyingInterrupted=false;this.allowOwnTaskHandoff=false;this.lastReason=reason;this.transition(next,reason);}
     arm(conversation,now=Date.now(),continueExisting=false) {
       if(!conversation){this.cancel('PAUSED','CONVERSATION_UNKNOWN');return;}
       if(!['DISABLED','PAUSED','STOPPED','ERROR'].includes(this.state))this.cancel();
       this.epoch++;this.conversation=conversation;this.stats.start=now;this.stats.count=0;
       this.lastHash=null;this.repeats=0;this.emptyCount=0;this.lastError=null;this.nextCheck=null;
-      this.resumeNeeded=false;this.kickoffRequested=continueExisting;this.quietSince=null;this.quietHash=null;this.lastReason=null;this.awaitingConfirmation=false;this.verifyingInterrupted=false;this.recoveryBasis=null;this.quietTaskHash=null;
+      this.resumeNeeded=false;this.kickoffRequested=continueExisting;this.quietSince=null;this.quietHash=null;this.lastReason=null;this.awaitingConfirmation=false;this.verifyingInterrupted=false;this.recoveryBasis=null;this.quietTaskHash=null;this.quietTaskToken=null;this.quietResponseToken=null;this.suspendedTaskHash=undefined;this.suspendedTaskToken=undefined;this.allowOwnTaskHandoff=false;this.lastCompletedResponseToken=null;this.lastCompletedHash=null;
       this.transition('IDLE','USER_ENABLED');
     }
     inactive(){return ['DISABLED','PAUSED','STOPPED','ERROR'].includes(this.state);}
     wait(kind,s,now) {
       if(!['RATE_LIMIT','NETWORK','SERVER'].includes(kind)){this.lastError=kind;this.cancel('PAUSED',kind);return;}
       if(kind!=='RATE_LIMIT'&&['SENDING_CONTINUE','WAITING_FOR_GENERATION'].includes(this.state)) {this.failed('DELIVERY_UNCERTAIN');return;}
+      const alreadyWaiting=['WAITING_FOR_USAGE_RESET','CHECKING_AVAILABILITY','NETWORK_ERROR','RECOVERING'].includes(this.state);
+      let pendingBasis=null;
+      if(this.state==='IDLE'&&this.kickoffRequested&&(s.hash||s.hasUserTurn===true))pendingBasis='explicit-start';
+      else if(this.state==='COUNTDOWN'&&['explicit-start','quota-recovery'].includes(this.sendBasis))pendingBasis=this.sendBasis;
+      if(!alreadyWaiting){
+        this.suspendedTaskHash=s.taskHash;this.suspendedTaskToken=s.taskToken;
+        // The quota notice can arrive before React appends our submitted user
+        // turn. Only a renderer-proven own submission may complete this handoff.
+        this.allowOwnTaskHandoff=kind==='RATE_LIMIT'&&['WAITING_FOR_GENERATION','GENERATING'].includes(this.state)&&s.taskHash===this.scheduledTaskHash&&s.taskToken===this.scheduledTaskToken;
+      }
       this.resumeNeeded=(this.kickoffRequested&&(!!s.hash||s.hasUserTurn===true))||['GENERATING','FINISHED','COUNTDOWN','SENDING_CONTINUE','WAITING_FOR_GENERATION','RECOVERING'].includes(this.state)||this.resumeNeeded===true;
       this.epoch++;this.deadline=null;this.awaitingConfirmation=false;this.verifyingInterrupted=false;this.lastError=kind;this.verifyAt=null;this.recoveryQuietSince=null;
-      this.recoveryBasis=kind==='RATE_LIMIT'&&this.resumeNeeded?'quota-recovery':null;
+      // A connection wait during a passive quota check must not forget why the
+      // interrupted task can be resumed. Uncertain submitted deliveries were
+      // already rejected above, so this exception never authorizes a retry.
+      this.recoveryBasis=!this.resumeNeeded?null:kind==='RATE_LIMIT'?'quota-recovery':pendingBasis||(alreadyWaiting?this.recoveryBasis:null);
       if(kind==='RATE_LIMIT') {
         this.transition('RATE_LIMITED',kind);this.stats.usageWaits++;this.poll=0;
         this.reset=resetTime(s.resetText||'',now);this.transition('WAITING_FOR_USAGE_RESET','SENDS_SUSPENDED');
         this.nextCheck=this.reset?Math.max(now+120000,this.reset.timestamp+30000):now+this.options.pollMinutes[0]*60000;
       } else {this.transition('NETWORK_ERROR',kind);this.nextCheck=now+this.options.networkRetryMs;}
     }
-    schedule(now,extra=0,hash=this.quietHash,basis='complete',taskHash) {
+    schedule(now,extra=0,hash=this.quietHash,basis='complete',taskHash,responseToken,taskToken) {
       if(this.options.maxConsecutive!=='unlimited'&&this.stats.count>=this.options.maxConsecutive) return this.cancel('PAUSED','MAX_CONTINUATIONS');
-      this.countdownStarted=now;this.scheduledHash=hash;this.scheduledTaskHash=taskHash;this.sendBasis=basis;this.verifyingInterrupted=false;this.awaitingConfirmation=false;this.confirmed=false;
+      this.countdownStarted=now;this.scheduledHash=hash;this.scheduledTaskHash=taskHash;this.scheduledTaskToken=taskToken;this.scheduledResponseToken=responseToken;this.sendBasis=basis;this.verifyingInterrupted=false;this.awaitingConfirmation=false;this.confirmed=false;this.allowOwnTaskHandoff=false;
       this.deadline=Math.max(now+Math.max(extra,this.options.delaySeconds*1000),this.lastSend+this.options.minCooldownMs);
       this.transition('COUNTDOWN','CONTINUATION_SCHEDULED');
+    }
+    recordCompletion(s,now) {
+      this.stats.lastSuccess=now;this.lastCompletedResponseToken=s.responseToken;this.lastCompletedHash=s.hash;
+      if(!s.hash){this.emptyCount++;if(this.emptyCount>1){this.cancel('PAUSED','EMPTY_RESPONSE_LOOP');return false;}}else this.emptyCount=0;
+      this.repeats=s.hash&&s.hash===this.lastHash?this.repeats+1:0;this.lastHash=s.hash;
+      if(this.repeats>=2){this.cancel('PAUSED','DUPLICATE_RESPONSE_LOOP');return false;}
+      return true;
     }
     tick(s,now=Date.now()) {
       if(this.inactive())return null;
       if(s.conversation!==this.conversation){this.cancel('PAUSED','CONVERSATION_CHANGED');return null;}
       if(s.humanDraft){this.cancel('PAUSED','HUMAN_DRAFT');return null;}
+      if(this.state==='COUNTDOWN'&&(s.taskHash!==this.scheduledTaskHash||s.taskToken!==this.scheduledTaskToken)){this.cancel('PAUSED','RESPONSE_CHANGED');return null;}
+      if(['WAITING_FOR_USAGE_RESET','NETWORK_ERROR','RECOVERING'].includes(this.state)&&(s.taskHash!==this.suspendedTaskHash||s.taskToken!==this.suspendedTaskToken)){
+        if(this.allowOwnTaskHandoff&&s.ownSubmittedTask===true){this.suspendedTaskHash=s.taskHash;this.suspendedTaskToken=s.taskToken;this.allowOwnTaskHandoff=false;}
+        else{this.cancel('PAUSED','RESPONSE_CHANGED');return null;}
+      }
       if(this.options.maxHours!=='unlimited'&&now-this.stats.start>=this.options.maxHours*3600000&&!s.generating){this.cancel('PAUSED','MAX_RUNTIME');return null;}
       if(this.state==='WAITING_FOR_USAGE_RESET') {
         if(now<this.nextCheck)return null;
@@ -128,49 +153,52 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
       if(s.error){this.lastError=s.error;this.cancel('PAUSED',s.error);return null;}
       // A complete, changed assistant response can acknowledge a reply that
       // finished between samples. It never causes a second submission.
-      const fastReply=this.state==='WAITING_FOR_GENERATION'&&s.completed&&s.hash&&s.hash!==this.scheduledHash;
+      const newResponse=(!!s.hash&&s.hash!==this.scheduledHash)||(s.responseToken!=null&&this.scheduledResponseToken!=null&&s.responseToken!==this.scheduledResponseToken);
+      const fastReply=this.state==='WAITING_FOR_GENERATION'&&s.completed&&newResponse;
       if(s.generating||fastReply) {
         if(this.state!=='GENERATING'){this.epoch++;this.deadline=null;this.awaitingConfirmation=false;this.transition('GENERATING',fastReply?'FAST_RESPONSE_CONFIRMED':'STOP_CONTROL_VISIBLE');}
-        this.kickoffRequested=false;this.verifyingInterrupted=false;this.recoveryBasis=null;this.observedHash=s.hash;this.quietSince=null;return null;
+        this.kickoffRequested=false;this.verifyingInterrupted=false;this.recoveryBasis=null;this.allowOwnTaskHandoff=false;this.observedHash=s.hash;this.quietSince=null;return null;
       }
       if(!s.ready){this.cancel('PAUSED','UI_CHANGED');return null;}
       if(this.state==='IDLE'&&this.kickoffRequested){
         if(!s.hash&&!s.hasUserTurn){this.cancel('PAUSED','NO_RESPONSE_TO_CONTINUE');return null;}
         this.verifyingInterrupted=!s.completed;
-        if(this.quietHash!==s.hash||this.quietTaskHash!==s.taskHash||this.quietSince==null){this.quietHash=s.hash;this.quietTaskHash=s.taskHash;this.quietSince=now;return null;}
+        if(this.quietHash!==s.hash||this.quietTaskHash!==s.taskHash||this.quietTaskToken!==s.taskToken||this.quietResponseToken!==s.responseToken||this.quietSince==null){this.quietHash=s.hash;this.quietTaskHash=s.taskHash;this.quietTaskToken=s.taskToken;this.quietResponseToken=s.responseToken;this.quietSince=now;return null;}
         if(now-this.quietSince<Math.max(this.options.quietMs,s.completed?0:10000))return null;
-        this.kickoffRequested=false;this.schedule(now,0,s.hash,s.completed?'complete':'explicit-start',s.taskHash);return null;
+        this.kickoffRequested=false;this.schedule(now,0,s.hash,s.completed?'complete':'explicit-start',s.taskHash,s.responseToken,s.taskToken);return null;
       }
       if(this.state==='RECOVERING') {
         if(now<this.verifyAt)return null;
         this.nextCheck=null;this.lastError=null;
         if(this.resumeNeeded){
           if(!s.completed){
-            if(this.recoveryBasis!=='quota-recovery'){this.cancel('PAUSED','COMPLETION_UNCERTAIN');return null;}
+            if(!['explicit-start','quota-recovery'].includes(this.recoveryBasis)){this.cancel('PAUSED','COMPLETION_UNCERTAIN');return null;}
             this.verifyingInterrupted=true;
-            if(this.recoveryHash!==s.hash||this.recoveryTaskHash!==s.taskHash||this.recoveryQuietSince==null){this.recoveryHash=s.hash;this.recoveryTaskHash=s.taskHash;this.recoveryQuietSince=now;return null;}
+            if(this.recoveryHash!==s.hash||this.recoveryTaskHash!==s.taskHash||this.recoveryTaskToken!==s.taskToken||this.recoveryResponseToken!==s.responseToken||this.recoveryQuietSince==null){this.recoveryHash=s.hash;this.recoveryTaskHash=s.taskHash;this.recoveryTaskToken=s.taskToken;this.recoveryResponseToken=s.responseToken;this.recoveryQuietSince=now;return null;}
             if(now-this.recoveryQuietSince<Math.max(10000,this.options.quietMs))return null;
           }
-          this.resumeNeeded=false;this.kickoffRequested=false;this.schedule(now,0,s.hash,s.completed?'complete':'quota-recovery',s.taskHash);
+          // A whole reply can finish between passive checks. Account for a new
+          // observed completion once, preserving loop safeguards without counting
+          // the same pre-quota completed reply again on every availability check.
+          if(s.completed&&s.responseToken!=null&&(s.responseToken!==this.lastCompletedResponseToken||s.hash!==this.lastCompletedHash)&&!this.recordCompletion(s,now))return null;
+          this.resumeNeeded=false;this.kickoffRequested=false;this.schedule(now,s.completed&&this.emptyCount?30000:0,s.hash,s.completed?'complete':this.recoveryBasis,s.taskHash,s.responseToken,s.taskToken);
         }else this.transition('IDLE','AVAILABILITY_VERIFIED');
         return null;
       }
       if(this.state==='GENERATING') {
-        if(this.quietHash!==s.hash||this.quietTaskHash!==s.taskHash||this.quietSince==null){this.quietHash=s.hash;this.quietTaskHash=s.taskHash;this.quietSince=now;return null;}
+        if(this.quietHash!==s.hash||this.quietTaskHash!==s.taskHash||this.quietTaskToken!==s.taskToken||this.quietResponseToken!==s.responseToken||this.quietSince==null){this.quietHash=s.hash;this.quietTaskHash=s.taskHash;this.quietTaskToken=s.taskToken;this.quietResponseToken=s.responseToken;this.quietSince=now;return null;}
         if(now-this.quietSince<this.options.quietMs)return null;
         if(!s.completed){if(now-this.quietSince>15000)this.cancel('PAUSED','COMPLETION_UNCERTAIN');return null;}
-        this.transition('FINISHED','STABLE_COMPLETION_CONFIRMED');this.stats.lastSuccess=now;
-        if(!s.hash){this.emptyCount++;if(this.emptyCount>1){this.cancel('PAUSED','EMPTY_RESPONSE_LOOP');return null;}}else this.emptyCount=0;
-        this.repeats=s.hash&&s.hash===this.lastHash?this.repeats+1:0;this.lastHash=s.hash;
-        if(this.repeats>=2){this.cancel('PAUSED','DUPLICATE_RESPONSE_LOOP');return null;}
-        this.schedule(now,this.emptyCount?30000:0,s.hash,'complete',s.taskHash);return null;
+        this.transition('FINISHED','STABLE_COMPLETION_CONFIRMED');
+        if(!this.recordCompletion(s,now))return null;
+        this.schedule(now,this.emptyCount?30000:0,s.hash,'complete',s.taskHash,s.responseToken,s.taskToken);return null;
       }
       if(this.state==='COUNTDOWN'&&!continuationAllowed(s,this.sendBasis)){this.cancel('PAUSED','COMPLETION_UNCERTAIN');return null;}
-      if(this.state==='COUNTDOWN'&&(s.hash!==this.scheduledHash||s.taskHash!==this.scheduledTaskHash)){this.cancel('PAUSED','RESPONSE_CHANGED');return null;}
+      if(this.state==='COUNTDOWN'&&(s.hash!==this.scheduledHash||s.taskHash!==this.scheduledTaskHash||s.responseToken!==this.scheduledResponseToken)){this.cancel('PAUSED','RESPONSE_CHANGED');return null;}
       if(this.state==='COUNTDOWN'&&now>=this.deadline){
         if(this.options.confirmBeforeSend&&!this.confirmed&&!this.awaitingConfirmation){this.awaitingConfirmation=true;this.log({event:'confirmation-needed'});return null;}
         if(this.awaitingConfirmation)return null;
-        this.transition('SENDING_CONTINUE','PREFLIGHT_PASSED');return {type:'send',epoch:this.epoch,conversation:this.conversation,hash:this.scheduledHash,taskHash:this.scheduledTaskHash,basis:this.sendBasis};}
+        this.transition('SENDING_CONTINUE','PREFLIGHT_PASSED');return {type:'send',epoch:this.epoch,conversation:this.conversation,hash:this.scheduledHash,taskHash:this.scheduledTaskHash,taskToken:this.scheduledTaskToken,responseToken:this.scheduledResponseToken,basis:this.sendBasis};}
       if(this.state==='WAITING_FOR_GENERATION'&&now>=this.sendDeadline)this.failed('SEND_NOT_ACKNOWLEDGED');
       return null;
     }
@@ -193,7 +221,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
   if(window.claudeAutoContinue&&!document.getElementById(ID))window.claudeAutoContinue.dispose();
   if(window.claudeAutoContinue||document.getElementById(ID)||!document.body)return;
   const {Engine,config,classify,continuationAllowed}=window.ClaudeAutoContinueEngine;
-  const VERSION='2.2.1-mac-preview';
+  const VERSION='2.2.2-mac-preview';
   const PRESETS={
     Default:'Continue working on the current project from exactly where you left off. Preserve completed work. Test your latest changes, fix any problems you find, then proceed to the next highest-priority unfinished task. Do not restart the project or redo completed work.',
     Simple:'Continue.',
@@ -323,101 +351,119 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
   function log(data){const row={time:new Date().toISOString(),...data};logs.push(row);if(logs.length>100)logs.shift();emit(row);}
   function engineOptions(){return config({...settings,maxConsecutive:settings.oneShot?1:settings.maxConsecutive});}
   const engine=new Engine(engineOptions(),log);
-  let disposed=false,ownedDraft=null,writing=false,releaseLock=null,arming=false,armRequest=0,pending=null,lastPulse=0,lastTick=Date.now(),drag=null;
+  let disposed=false,ownedDraft=null,submittedReceipt=null,writing=false,releaseLock=null,arming=false,armingConversation=null,armRequest=0,pending=null,lastPulse=0,lastTick=Date.now(),drag=null;
   let tourStep=0,tourReturnFocus=null,lastSize='';
   function applyAppearance(){for(const [k,v] of Object.entries(THEMES[settings.theme]))container.style.setProperty('--ac-'+k,v);container.style.colorScheme=settings.theme==='Light'?'light':'dark';widget.classList.toggle('ac-compact',settings.compact);}
   function save(){try{localStorage.setItem(KEY,JSON.stringify({...settings,enabled:false}));}catch{log({event:'storage-unavailable'});}}
   function conversation(){return /^\/chat\/[a-zA-Z0-9-]+\/?$/.test(location.pathname)?location.origin+location.pathname:null;}
-  function visible(node){if(!node||container.contains(node)||!node.isConnected)return false;const c=getComputedStyle(node);return c.display!=='none'&&c.visibility!=='hidden'&&node.getClientRects().length>0;}
+  function visible(node){if(!node||container.contains(node)||!node.isConnected||node.closest('[hidden],[aria-hidden="true"]'))return false;const c=getComputedStyle(node);return c.display!=='none'&&c.visibility!=='hidden'&&c.visibility!=='collapse'&&node.getClientRects().length>0;}
   function all(selector,root=document){return [...root.querySelectorAll(selector)].filter(visible);}
   function unique(selector,root=document){const nodes=all(selector,root);return nodes.length===1?nodes[0]:null;}
-  function sendControl(){const nodes=[...document.querySelectorAll(SELECTORS.send)].filter(n=>n.isConnected&&!container.contains(n));return nodes.length===1?nodes[0]:null;}
+  function sendControl(composer){const nodes=[...document.querySelectorAll(SELECTORS.send)].filter(n=>n.isConnected&&!container.contains(n)&&!n.closest(SELECTORS.message)&&!n.closest('[hidden],[aria-hidden="true"]'));if(nodes.length===1)return nodes[0];if(composer){for(let scope=composer.parentElement;scope&&scope!==document.body;scope=scope.parentElement){if(scope.querySelector(SELECTORS.assistant))break;const scoped=nodes.filter(n=>scope.contains(n));if(scoped.length===1)return scoped[0];if(scoped.length>1){const shown=scoped.filter(visible);return shown.length===1?shown[0]:null;}}}const shown=nodes.filter(visible);return shown.length===1?shown[0]:null;}
   function usable(node){return !!node&&!node.disabled&&!node.readOnly&&node.getAttribute('aria-disabled')!=='true'&&!node.closest('[inert]');}
-  function value(node){return node?('value'in node?node.value:node.textContent||''):'';}
+  function value(node){if(!node)return '';if('value'in node)return node.value;if(typeof node.innerText==='string')return node.innerText;const blocks=new Set(['P','DIV','LI','BLOCKQUOTE','PRE']);function text(part){if(part.nodeType===3)return part.nodeValue||'';if(part.nodeName==='BR')return '\n';const content=[...part.childNodes].map(text).join('');return blocks.has(part.nodeName)?content+'\n':content;}return [...node.childNodes].map(text).join('').replace(/\n$/,'');}
   function fingerprint(text){if(!text.trim())return null;let n=2166136261;for(const c of text.trim().replace(/\s+/g,' '))n=Math.imul(n^c.charCodeAt(0),16777619);return (n>>>0).toString(16);}
+  function normalizedText(text){return text.trim().replace(/\s+/g,' ');}
   function snapshot(){
-    const composer=unique(SELECTORS.composer), send=sendControl(),stop=unique(SELECTORS.stop);
+    const composers=all(SELECTORS.composer).filter(n=>!n.closest(SELECTORS.message));const composer=composers.length===1?composers[0]:null,send=sendControl(composer),stop=unique(SELECTORS.stop);
     const responses=all(SELECTORS.assistant),response=responses.at(-1);
-    const userTurn=all('[data-message-author-role="user"], [data-testid="user-message"]').at(-1);
+    const userAliases=all('[data-message-author-role="user"], [data-testid="user-message"]'),userTurn=userAliases.at(-1),userTurns=userAliases.filter(node=>!userAliases.some(other=>other!==node&&other.contains(node))),lastUserTurn=userTurns.at(-1),userMessageId=lastUserTurn?.getAttribute('data-message-id')||lastUserTurn?.getAttribute('data-turn-id')||null;
+    const taskToken=lastUserTurn?(userMessageId?'id:'+userMessageId:'count:'+userTurns.length):null;
+    const ownSubmittedTask=!!submittedReceipt&&submittedReceipt.conversation===conversation()&&normalizedText(value(userTurn))===submittedReceipt.text&&(userTurns.length===submittedReceipt.taskCount+1||(!!submittedReceipt.userMessageId&&!!userMessageId&&submittedReceipt.userMessageId!==userMessageId));
+    const turns=responses.filter(node=>!responses.some(other=>other!==node&&other.contains(node)));const turn=turns.at(-1),messageId=turn?.getAttribute('data-message-id')||turn?.getAttribute('data-turn-id');const responseToken=turn?(messageId?'id:'+messageId:'count:'+turns.length):null;
     // Toolbars can be siblings of the response body. Stop at another assistant
     // response so an older turn's Copy button can never complete the latest turn.
     let area=response?.closest('[data-message-author-role="assistant"]')||response?.closest('[data-testid="assistant-message"]')||response?.parentElement;
     const completionControls=node=>[...node.querySelectorAll(SELECTORS.completion)].filter(b=>b.isConnected&&!container.contains(b)).filter(b=>!b.closest('pre,code,[data-testid="code-block"]')&&(b.getAttribute('aria-label')?.toLowerCase()!=='copy'||!response.contains(b)));
+    const controlLabelMatches=button=>/^(continue|continue generating|resume)$/i.test((button.textContent||button.getAttribute('aria-label')||'').trim());
+    const approvalRegions='dialog[open],[role="dialog"],[role="alertdialog"],[aria-modal="true"],[data-testid="tool-approval"],[data-testid="tool-approval-request"],[data-testid="approval-dialog"],[data-testid="permission-request"],[data-testid="tool-permission-request"]';
+    const contentRegions='pre,code,[data-testid="code-block"],[data-testid*="tool-call"],[data-testid*="tool-result"],[data-testid*="artifact"]';
+    // Native response actions live outside the generated response body. A sole
+    // turn annotation may wrap both body and footer, so keep its distinct footer.
+    function insideResponseBody(button){if(!response?.contains(button))return false;return !(response.matches('[data-message-author-role="assistant"]')&&!response.matches('[data-testid="assistant-message"],.font-claude-response')&&button.closest('footer,[data-testid="message-actions"],[data-testid="response-actions"]'));}
+    const continuationControls=node=>all(SELECTORS.buttons,node).filter(b=>controlLabelMatches(b)&&usable(b)&&!insideResponseBody(b)&&!b.closest(contentRegions+','+approvalRegions+',[data-testid*="approval"],[data-testid*="permission"]'));
     if(response){
       for(let n=response.parentElement,depth=0;n&&n!==document.body&&depth<8;n=n.parentElement,depth++){
         const others=[...n.querySelectorAll(SELECTORS.assistant)].filter(x=>x!==response&&!x.contains(response)&&!response.contains(x));
-        if(others.length)break;
-        if(completionControls(n).length){area=n;break;}
+        if(others.length||n.querySelector('[data-message-author-role="user"], [data-testid="user-message"]'))break;
+        if(completionControls(n).length||continuationControls(n).length){area=n;break;}
       }
     }
-    const completed=!!response&&(response.getAttribute('data-is-streaming')==='false'||!!(area&&completionControls(area).length));
-    const direct=area?all(SELECTORS.buttons,area).filter(b=>/^(continue|continue generating|resume)$/i.test((b.textContent||'').trim())&&usable(b)):[];
+    const direct=area?continuationControls(area):[];
+    const directInsideResponse=!!response&&all(SELECTORS.buttons,response).some(b=>controlLabelMatches(b)&&insideResponseBody(b));
+    const approvalBlocked=all(approvalRegions).some(node=>!node.closest(SELECTORS.message)||!!area?.contains(node));
+    const completed=!!response&&(response.getAttribute('data-is-streaming')==='false'||!!(area&&completionControls(area).length)||direct.length===1);
     const warnings=all(SELECTORS.warning).filter(n=>!n.closest(SELECTORS.message)).map(n=>n.textContent||'');
-    const error=classify({warnings,online:navigator.onLine,composerUsable:usable(composer),unknownError:all('[data-testid="error-banner"], [role="alert"][data-severity="error"]').some(n=>!n.closest(SELECTORS.message))});
+    const error=classify({warnings,online:navigator.onLine,composerUsable:usable(composer),usageLimitVisible:all('[data-testid="usage-limit-banner"]').some(n=>!n.closest(SELECTORS.message)),unknownError:all('[data-testid="error-banner"], [role="alert"][data-severity="error"]').some(n=>!n.closest(SELECTORS.message))});
     const text=value(composer);
     if(ownedDraft?.submitted&&ownedDraft.node===composer&&!text.trim())ownedDraft=null;
-    const controlsAmbiguous=all(SELECTORS.stop).length>1||all(SELECTORS.send).length>1;
-    return {conversation:conversation(),composer,send,direct:direct.length===1?direct[0]:null,
-      generating:!!stop||!!(response&&(response.matches('[data-is-streaming="true"], [aria-busy="true"]')||area?.matches('[data-is-streaming="true"], [aria-busy="true"]')||all('[data-is-streaming="true"], [aria-busy="true"]',area||response).length)),ready:!!composer&&usable(composer)&&!!send&&!controlsAmbiguous,
-      completed,hash:fingerprint(response?.textContent||''),taskHash:fingerprint(userTurn?.textContent||''),hasUserTurn:!!userTurn,error:error.kind,resetText:error.resetText,
+    const controlsAmbiguous=all(SELECTORS.stop).length>1;
+    return {conversation:conversation(),composer,send,direct:direct.length===1?direct[0]:null,directInsideResponse,
+      generating:!!stop||!!(response&&(response.matches('[data-is-streaming="true"], [aria-busy="true"]')||area?.matches('[data-is-streaming="true"], [aria-busy="true"]')||all('[data-is-streaming="true"], [aria-busy="true"]',area||response).length)),ready:!controlsAmbiguous&&composers.length<=1&&((!!composer&&usable(composer)&&!!send)||direct.length===1),
+      completed,hash:fingerprint(response?.textContent||''),taskHash:fingerprint(userTurn?.textContent||''),taskToken,taskCount:userTurns.length,userMessageId,ownSubmittedTask,responseToken,hasUserTurn:!!userTurn,error:approvalBlocked?'HUMAN_APPROVAL_REQUIRED':error.kind,resetText:error.resetText,
       humanDraft:!!text.trim()&&!(ownedDraft&&ownedDraft.node===composer&&ownedDraft.text===text),warnings: warnings.length};
   }
   function clearOwned(){if(!ownedDraft)return;const draft=ownedDraft;ownedDraft=null;if(!draft.submitted&&value(draft.node)===draft.text){try{writing=true;setValue(draft.node,'');}catch{log({event:'draft-cleanup-failed'});}finally{writing=false;}}}
   function cancel(state='PAUSED',reason='HUMAN_CONTROL'){
-    armRequest++;arming=false;engine.cancel(state,reason);if(pending){clearTimeout(pending);pending=null;}clearOwned();
-    if(releaseLock){releaseLock();releaseLock=null;}check.checked=false;render();pulse();
+    armRequest++;arming=false;armingConversation=null;submittedReceipt=null;engine.cancel(state,reason);if(pending){clearTimeout(pending);pending=null;}clearOwned();
+    if(releaseLock){releaseLock();releaseLock=null;}check.checked=false;try{render();pulse();}catch{emit({event:'heartbeat',active:false,keepAwake:false,state:engine.state,rendererVersion:VERSION,widgets:0});}
   }
   async function arm(once=false){
     if(!el('ac-tour').hidden){el('ac-tour-next').focus();return;}
     if(arming||!engine.inactive())return;
-    const request=++armRequest;arming=true;render();
+    const request=++armRequest,requestedConversation=conversation();armingConversation=requestedConversation;arming=true;render();
     if(!navigator.locks){arming=false;cancel('PAUSED','WINDOW_LOCK_UNAVAILABLE');return;}
     try {await navigator.locks.request('claude-auto-continue-owner',{ifAvailable:true},async lock=>{
       if(request!==armRequest||disposed)return;
-      arming=false;
+      arming=false;armingConversation=null;
+      if(conversation()!==requestedConversation){cancel('PAUSED','CONVERSATION_CHANGED');return;}
       if(!lock){cancel('PAUSED','ANOTHER_WINDOW_ACTIVE');return;}
-      engine.options=engineOptions();if(once===true)engine.options.maxConsecutive=1;engine.arm(conversation(),Date.now(),true);check.checked=!engine.inactive();
+      submittedReceipt=null;engine.options=engineOptions();if(once===true)engine.options.maxConsecutive=1;engine.arm(conversation(),Date.now(),true);check.checked=!engine.inactive();
       if(engine.inactive()){render();return;}
       const held=new Promise(resolve=>{releaseLock=resolve;});tick();render();await held;
     });}catch{arming=false;cancel('PAUSED','WINDOW_LOCK_FAILED');}
   }
   function setValue(node,text){
-    if(node.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(node,text);node.dispatchEvent(new Event('input',{bubbles:true}));return;}
+    if(node.tagName==='TEXTAREA'){Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(node,text);node.dispatchEvent(new Event('input',{bubbles:true}));if(fingerprint(value(node))!==fingerprint(text))throw Error('EDITOR_INSERT_FAILED');return;}
     node.focus();
     const selection=window.getSelection(),range=document.createRange();range.selectNodeContents(node);selection.removeAllRanges();selection.addRange(range);
     // Browser editing command lets ProseMirror observe a real edit transaction.
     if(!document.execCommand('insertText',false,text))throw Error('EDITOR_INSERT_FAILED');
     node.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:text}));
+    if(fingerprint(value(node))!==fingerprint(text))throw Error('EDITOR_INSERT_FAILED');
   }
-  function valid(action,s){return !disposed&&releaseLock&&engine.state==='SENDING_CONTINUE'&&engine.epoch===action.epoch&&s.conversation===action.conversation&&!s.error&&!s.generating&&continuationAllowed(s,action.basis)&&!s.humanDraft&&s.hash===action.hash&&s.taskHash===action.taskHash;}
+  function surfacePresent(){return container.isConnected&&!!el('ac-state')&&!!el('ac-cancel-btn')&&!!el('ac-tour');}
+  function valid(action,s){return !disposed&&surfacePresent()&&releaseLock&&engine.state==='SENDING_CONTINUE'&&engine.epoch===action.epoch&&s.conversation===action.conversation&&!s.error&&!s.generating&&continuationAllowed(s,action.basis)&&!s.humanDraft&&s.hash===action.hash&&s.taskHash===action.taskHash&&(!Object.hasOwn(action,'responseToken')||s.responseToken===action.responseToken)&&(!Object.hasOwn(action,'taskToken')||s.taskToken===action.taskToken);}
   function send(action){
     let s=snapshot();
     if(!valid(action,s)){cancel('PAUSED','SEND_PREFLIGHT_CHANGED');return;}
-    if(s.direct){engine.sent(action.epoch);s.direct.click();render();return;}
+    if(s.direct){if(!engine.sent(action.epoch))return;submittedReceipt=null;try{s.direct.click();}catch{engine.failed('SEND_CLICK_FAILED');}render();return;}
     if(value(s.composer).trim()){cancel('PAUSED','HUMAN_DRAFT');return;}
     const text=(settings.phrase+'\n\n'+settings.project).trim();
     if(!text){engine.failed('EMPTY_PROMPT');return;}
-    try{writing=true;ownedDraft={node:s.composer,text};setValue(s.composer,text);}catch{ownedDraft=null;engine.failed('EDITOR_INSERT_FAILED');return;}finally{writing=false;}
+    try{writing=true;ownedDraft={node:s.composer,text};setValue(s.composer,text);ownedDraft.text=value(s.composer);}catch{if(ownedDraft)ownedDraft.text=value(s.composer);clearOwned();engine.failed('EDITOR_INSERT_FAILED');return;}finally{writing=false;}
     pending=setTimeout(()=>{
-      pending=null;s=snapshot();
+      pending=null;try{s=snapshot();
       if(action.epoch!==engine.epoch||engine.state!=='SENDING_CONTINUE'){clearOwned();return;}
       if(s.error){engine.tick(s);clearOwned();render();return;}
       if(!valid(action,s)||!ownedDraft||s.composer!==ownedDraft.node||value(s.composer)!==ownedDraft.text){cancel('PAUSED','SEND_PREFLIGHT_CHANGED');return;}
       if(!usable(s.send)||!visible(s.send)){engine.failed('SEND_BUTTON_DISABLED');clearOwned();render();return;}
       // A missing acknowledgement never triggers a second click or an Enter fallback.
-      engine.sent(action.epoch);ownedDraft.submitted=true;s.send.click();render();
+      if(!engine.sent(action.epoch)){clearOwned();return;}ownedDraft.submitted=true;submittedReceipt={conversation:s.conversation,text:normalizedText(ownedDraft.text),taskCount:s.taskCount,userMessageId:s.userMessageId};s.send.click();render();
+      }catch{engine.failed('SEND_CLICK_FAILED');clearOwned();render();}
     },250);
   }
   function pulse(){emit({event:'heartbeat',active:!engine.inactive(),keepAwake:settings.keepAwake,state:engine.state,rendererVersion:VERSION,tutorialVisible:!el('ac-tour').hidden,widgets:document.querySelectorAll('#'+ID).length,composer:!!unique(SELECTORS.composer),send:!!sendControl()});lastPulse=Date.now();}
   function tick(){try{tickSafely();}catch{cancel('ERROR','UNEXPECTED_UI_ERROR');}}
   function tickSafely(){
     if(disposed)return;
+    if(!surfacePresent()){dispose();return;}
     const now=Date.now();
     if(now-lastTick>60000&&!engine.inactive()&&!['WAITING_FOR_USAGE_RESET','NETWORK_ERROR'].includes(engine.state)){cancel('PAUSED','WAKE_REVALIDATION_REQUIRED');}
     lastTick=now;
     if(!engine.inactive()){
       if(conversation()!==engine.conversation){cancel('PAUSED','CONVERSATION_CHANGED');return;}
-      if(settings.maxHours!=='unlimited'&&now-engine.stats.start>=settings.maxHours*3600000&&engine.state!=='GENERATING'){cancel('PAUSED','MAX_RUNTIME');return;}
+      if(settings.maxHours!=='unlimited'&&now-engine.stats.start>=settings.maxHours*3600000&&!snapshot().generating){cancel('PAUSED','MAX_RUNTIME');return;}
       const waiting=['WAITING_FOR_USAGE_RESET','NETWORK_ERROR'].includes(engine.state);
       if(!waiting||now>=engine.nextCheck){
         const s=snapshot();const action=engine.tick(s,now);
@@ -426,7 +472,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
         if(action)send(action);
       }
     }
-    if(engine.inactive()&&releaseLock){releaseLock();releaseLock=null;clearOwned();check.checked=false;pulse();}
+    if(engine.inactive()&&releaseLock){releaseLock();releaseLock=null;submittedReceipt=null;clearOwned();check.checked=false;pulse();}
     render();if(now-lastPulse>10000)pulse();
   }
   const labels={DISABLED:'Ready when you are',IDLE:'Idle — waiting for a response',GENERATING:'Claude is working',FINISHED:'Response finished',SENDING_CONTINUE:'Sending Continue',WAITING_FOR_GENERATION:'Waiting for Claude',RATE_LIMITED:'Usage Limit Reached',WAITING_FOR_USAGE_RESET:'Waiting for usage reset',CHECKING_AVAILABILITY:'Checking Availability',NETWORK_ERROR:'Waiting for connection/service',RECOVERING:'Verifying availability',PAUSED:'Paused',ERROR:'Error',STOPPED:'Stopped'};
@@ -435,7 +481,7 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
     if(el('ac-state').textContent!==status)el('ac-state').textContent=status;
     widget.classList.toggle('ac-active-glow',!engine.inactive());widget.classList.toggle('ac-counting',engine.state==='COUNTDOWN');
     el('ac-cancel-btn').textContent=arming?'Starting…':engine.inactive()?(engine.state==='DISABLED'||engine.state==='STOPPED'?'Start':'Resume'):engine.state==='COUNTDOWN'?'Cancel countdown':'Pause';
-    const reasons={RESPONSE_CHANGED:'The response changed during the countdown. Review the chat before resuming.',SEND_NOT_ACKNOWLEDGED:'The last send was not confirmed. Check the chat before resuming.',DELIVERY_UNCERTAIN:'Connection was interrupted after sending. Check the chat before resuming.',NO_RESPONSE_TO_CONTINUE:'There is no assistant response yet. Send your first request, then press Start.',TUTORIAL_OPENED:'Quick tour opened. Resume after the tour when you are ready.',KEYBOARD_PAUSE:'Paused with the keyboard shortcut. Resume when you are ready.',HUMAN_CONTROL:'Paused while you interact with the chat. Resume when ready.',UNKNOWN:'Claude is showing a warning. Resolve it, then choose Resume.',UI_CHANGED:'Chat controls are unavailable. Open a chat and try Resume.',COMPLETION_UNCERTAIN:'Could not confirm the response finished. Check Claude’s reply and controls before resuming.',CONVERSATION_UNKNOWN:'Open an existing chat, then choose Start.',CONVERSATION_CHANGED:'You changed chats. Resume to enable this chat.',SETTINGS_CHANGED:'Settings saved. Resume when you are ready.',WINDOW_LOCK_UNAVAILABLE:'Window coordination is unavailable. Reopen the local app.',ANOTHER_WINDOW_ACTIVE:'Another window is running Auto Continue. Pause it first.',WINDOW_LOCK_FAILED:'Could not coordinate windows. Reopen the local app.',WAKE_REVALIDATION_REQUIRED:'Your Mac woke up. Check the chat, then Resume.',MAX_CONTINUATIONS:'Session continuation limit reached. Resume starts a new session.',MAX_RUNTIME:'Session time limit reached. Resume starts a new session.',DUPLICATE_RESPONSE_LOOP:'Repeated responses detected. Review the chat before resuming.',HUMAN_DRAFT:'Your message is still in the composer. Send or clear it first.'};
+    const reasons={HUMAN_APPROVAL_REQUIRED:'A dialog or approval request needs your attention. Resolve or close it, then Resume.',RESPONSE_CHANGED:'The response changed during the countdown. Review the chat before resuming.',SEND_NOT_ACKNOWLEDGED:'The last send was not confirmed. Check the chat before resuming.',DELIVERY_UNCERTAIN:'Connection was interrupted after sending. Check the chat before resuming.',NO_RESPONSE_TO_CONTINUE:'There is no assistant response yet. Send your first request, then press Start.',TUTORIAL_OPENED:'Quick tour opened. Resume after the tour when you are ready.',KEYBOARD_PAUSE:'Paused with the keyboard shortcut. Resume when you are ready.',HUMAN_CONTROL:'Paused while you interact with the chat. Resume when ready.',UNKNOWN:'Claude is showing a warning. Resolve it, then choose Resume.',UI_CHANGED:'Chat controls are unavailable. Open a chat and try Resume.',COMPLETION_UNCERTAIN:'Could not confirm the response finished. Check Claude’s reply and controls before resuming.',CONVERSATION_UNKNOWN:'Open an existing chat, then choose Start.',CONVERSATION_CHANGED:'You changed chats. Resume to enable this chat.',SETTINGS_CHANGED:'Settings saved. Resume when you are ready.',WINDOW_LOCK_UNAVAILABLE:'Window coordination is unavailable. Reopen the local app.',ANOTHER_WINDOW_ACTIVE:'Another window is running Auto Continue. Pause it first.',WINDOW_LOCK_FAILED:'Could not coordinate windows. Reopen the local app.',WAKE_REVALIDATION_REQUIRED:'Your Mac woke up. Check the chat, then Resume.',MAX_CONTINUATIONS:'Session continuation limit reached. Resume starts a new session.',MAX_RUNTIME:'Session time limit reached. Resume starts a new session.',DUPLICATE_RESPONSE_LOOP:'Repeated responses detected. Review the chat before resuming.',HUMAN_DRAFT:'Your message is still in the composer. Send or clear it first.'};
     const detail=engine.awaitingConfirmation?'The timer is finished. Approve this continuation to send, or Cancel countdown to pause.':engine.inactive()?(reasons[engine.lastReason]|| (engine.state==='DISABLED'?'Start continues this chat after the countdown, or waits while Claude is working.':engine.state==='STOPPED'?'Automation stopped. Start when you are ready.':`Needs attention: ${(engine.lastReason||engine.lastError||'unknown').toLowerCase().replaceAll('_',' ')}.`)):engine.state==='GENERATING'?'Claude is working. The next continuation waits until the response finishes.':engine.state==='WAITING_FOR_USAGE_RESET'?`No messages will be sent. Next check: ${engine.nextCheck?new Date(engine.nextCheck).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}):'pending'}.`:engine.verifyingInterrupted?'The previous reply may have been interrupted. Verifying 10 seconds of idle chat before continuing.':engine.state==='IDLE'?'Checking the latest response before starting the countdown.':engine.state==='COUNTDOWN'?(engine.sendBasis==='complete'?'You can cancel before the next message is sent.':'Resuming the interrupted task. You can cancel before the next message is sent.'):'Monitoring this chat. You can pause at any time.';
     if(el('ac-detail').textContent!==detail)el('ac-detail').textContent=detail;
     el('ac-summary').textContent=`${engine.stats.count} / ${engine.options.maxConsecutive==='unlimited'?'∞':engine.options.maxConsecutive} continuations`;
@@ -503,15 +549,20 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
   on(window,'storage',event=>{if(event.key===TOUR_KEY&&event.newValue==='true'&&!el('ac-tour').hidden){el('ac-tour').hidden=true;el('ac-cancel-btn').focus();}});
   on(el('ac-logs'),'click' ,()=>emit({event:'open-logs'}));
   function human(event){
-    if(writing||engine.inactive()||container.contains(event.target))return;
+    if(writing||(!arming&&engine.inactive())||container.contains(event.target))return;
     const target=event.target instanceof Element?event.target:null;
     if(!target)return;
-    if(target.closest(SELECTORS.composer)||target.closest(SELECTORS.stop)||target.closest(SELECTORS.send)||target.closest('button, a[href], [role="button"]'))cancel('PAUSED','HUMAN_CONTROL');
+    const composer=target.closest(SELECTORS.composer),button=target.closest('button,[role="button"]'),link=target.closest('a[href]');
+    if(event.type==='keydown'){const key=event.key||'',editing=/^(?:Backspace|Delete|Enter|Insert)$/.test(key)||(key.length===1&&!event.metaKey&&!event.ctrlKey)||((event.metaKey||event.ctrlKey)&&/^[vx]$/i.test(key));if(composer&&!editing)return;if(!composer&&key!=='Enter'&&key!==' ')return;}
+    if(composer||target.closest(SELECTORS.stop)||target.closest(SELECTORS.send)){cancel('PAUSED','HUMAN_CONTROL');return;}
+    if(link){let url;try{url=new URL(link.href,location.href);}catch{return;}if(url.origin===location.origin&&url.pathname!==location.pathname)cancel('PAUSED','HUMAN_CONTROL');return;}
+    if(button){const label=(button.getAttribute('aria-label')||button.getAttribute('title')||button.textContent||'').trim(),testId=button.getAttribute('data-testid')||'';if(/^(?:copy\b|expand\b|collapse\b|show (?:thinking|details|reasoning|tools?)\b|hide (?:thinking|details|reasoning|tools?)\b)/i.test(label)||/^(?:action-bar-copy|copy-response-button|copy-code-button|tool-call-toggle|thinking-toggle)$/.test(testId))return;cancel('PAUSED','HUMAN_CONTROL');}
   }
   for(const event of ['beforeinput','input','paste','drop','keydown','pointerdown'])on(document,event,human,true);
   on(document,'click',event=>{if(event.isTrusted)human(event);},true);
-  on(window,'popstate',()=>cancel('PAUSED','CONVERSATION_CHANGED'));
-  on(window,'hashchange',()=>cancel('PAUSED','CONVERSATION_CHANGED'));
+  function navigationChanged(){const expected=arming?armingConversation:engine.conversation;if((arming||!engine.inactive())&&conversation()!==expected)cancel('PAUSED','CONVERSATION_CHANGED');}
+  on(window,'popstate',navigationChanged);
+  on(window,'hashchange',navigationChanged);
   function clamp(){const r=container.getBoundingClientRect();container.style.left=`${Math.max(8,Math.min(innerWidth-Math.min(r.width,innerWidth-16)-8,r.left))}px`;container.style.top=`${Math.max(48,Math.min(innerHeight-r.height-8,r.top))}px`;container.style.right='auto';container.style.bottom='auto';const panel=el('ac-panel');const w=Math.min(340,innerWidth-16),h=panel.getBoundingClientRect().height;const x=r.right+12+w<=innerWidth-8?r.right+12:r.left-w-12>=8?r.left-w-12:Math.max(8,Math.min(innerWidth-w-8,r.left));panel.style.left=`${x}px`;panel.style.top=`${Math.max(48,Math.min(innerHeight-h-8,r.top))}px`;}
 
   on(el('ac-drag-handle'),'pointerdown',e=>{if(e.button!==0)return;const r=container.getBoundingClientRect();drag={x:e.clientX,y:e.clientY,left:r.left,top:r.top};e.preventDefault();});
@@ -525,10 +576,10 @@ if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {
   });
   observer.observe(document.body,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['disabled','aria-disabled','aria-label','data-is-streaming']});
   const timer=setInterval(tick,500);
-  const displayTimer=setInterval(()=>{if(settings.paranoid&&!disposed)render();},100);
+  const displayTimer=setInterval(()=>{if(settings.paranoid&&!disposed){try{if(!surfacePresent()){dispose();return;}render();}catch{cancel('ERROR','UNEXPECTED_UI_ERROR');}}},100);
   function dispose(){if(disposed)return;cancel('STOPPED','DISPOSED');disposed=true;observer.disconnect();clearInterval(timer);clearInterval(displayTimer);listeners.forEach(f=>f());container.remove();delete window.claudeAutoContinue;}
   on(window,'pagehide',dispose);
-  window.claudeAutoContinue={version:VERSION,resume:arm,resumeOnce:()=>arm(true),pause:()=>cancel(),stop:()=>cancel('STOPPED'),dispose,diagnostics:()=>({version:VERSION,tutorialVisible:!el('ac-tour').hidden,theme:settings.theme,paranoid:settings.paranoid,awaitingConfirmation:engine.awaitingConfirmation,state:engine.state,reason:engine.lastReason||null,widgets:document.querySelectorAll('#'+ID).length,composer:!!unique(SELECTORS.composer),send:!!sendControl(),stats:{...engine.stats},signals:(()=>{const s=snapshot();return {generating:s.generating,completed:s.completed,error:s.error,hasResponse:!!s.hash,hasUserTurn:s.hasUserTurn,ready:s.ready,humanDraft:s.humanDraft,resumable:continuationAllowed(s,'explicit-start')&&(!!s.hash||s.hasUserTurn)};})()})};
+  window.claudeAutoContinue={version:VERSION,resume:arm,resumeOnce:()=>arm(true),pause:()=>cancel(),stop:()=>cancel('STOPPED'),dispose,diagnostics:()=>({version:VERSION,tutorialVisible:!el('ac-tour').hidden,theme:settings.theme,paranoid:settings.paranoid,awaitingConfirmation:engine.awaitingConfirmation,state:engine.state,reason:engine.lastReason||null,widgets:document.querySelectorAll('#'+ID).length,composer:!!unique(SELECTORS.composer),send:!!sendControl(),stats:{...engine.stats},signals:(()=>{const s=snapshot();return {generating:s.generating,completed:s.completed,error:s.error,directControl:!!s.direct,directInsideResponse:s.directInsideResponse,ownSubmittedTask:s.ownSubmittedTask,hasResponse:!!s.hash,hasUserTurn:s.hasUserTurn,ready:s.ready,humanDraft:s.humanDraft,resumable:continuationAllowed(s,'explicit-start')&&(!!s.hash||s.hasUserTurn)};})()})};
   applyAppearance();clamp();render();pulse();log({event:'initialized',version:VERSION});
   let seen=window.__CLAUDE_CONTINUE_TOUR_SEEN===true;try{seen=seen||localStorage.getItem(TOUR_KEY)==='true';}catch{}
   if(!seen){showTour();markTourSeen();pulse();}

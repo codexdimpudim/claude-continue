@@ -39,7 +39,9 @@ The copied app is locally signed and has a different signing identity. Resolve K
 
 ## App update or compatibility failure
 
-Launch checks both the original build and the copied app’s recorded modified-file hashes. An app update pauses launch rather than patching blindly. The plugin’s source updater is not a vendor app updater. File a compatibility request with version/build details, or use Restore Claude.command to return to the untouched original.
+Launch checks both the original build and the copied app’s recorded modified-file hashes. The loader also checks the copied ASAR hash when opened directly. An app update pauses launch rather than patching blindly. The plugin’s source updater is not a vendor app updater. File a compatibility request with version/build details, or use Restore Claude.command to return to the untouched original.
+
+Extract the complete release folder before running Update.command. The updater rejects missing files or a generated bundle that differs from its source files before it closes Claude. Keep the folder together; developers must rebuild after source changes. If another launcher is running, let it finish before launching again. After an update, reopen your existing chat and press Start.
 
 ## Mac sleep, background operation, and long sessions
 
@@ -50,6 +52,7 @@ Keep-awake requests prevent-app-suspension while automation is active, but does 
 | Category | What it indicates |
 | --- | --- |
 | HUMAN_CONTROL / HUMAN_DRAFT | Manual interaction or draft content canceled automation |
+| HUMAN_APPROVAL_REQUIRED | A visible dialog or tool approval needs your attention |
 | SETTINGS_CHANGED / CONVERSATION_CHANGED | Configuration or selected chat changed |
 | NO_RESPONSE_TO_CONTINUE | Empty or unsupported response area |
 | COMPLETION_UNCERTAIN | The latest turn lacks a supported completion signal |

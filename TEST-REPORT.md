@@ -1,5 +1,33 @@
 # Validation report
 
+## 2.2.2 Beta audit — October 13, 2026
+
+Build: `2.2.2-mac-preview`, for the same exact Claude Desktop `2.31226.1` / Electron `44.4.3` build. The previous release remains available unchanged.
+
+This audit adds regressions for interrupted-task recovery through network/service failures, semantic quota notices, task/response identity, fast identical replies, rich editor paragraphs, partial insertion cleanup, control scoping, harmless inspection, pending human approvals, delayed ownership cancellation, damaged widgets, reload/injection races, exact managed-build validation, stale health, concurrent launchers, and installer rollback/removal failures. The [scenario matrix](docs/RELIABILITY-AUDIT.md) explains the intended result and remaining boundaries.
+
+Rendered acceptance cases exercise twelve acknowledged continuations with an exact cap, an interrupted quota response without a completion toolbar followed by further turns, and preservation of human text preventing later sends. A deterministic engine simulation exercises 200 submissions with 23 quota interruptions and 19 service waits. It checks cooldown, count limits, and duplicate-action prevention. These are simulations, not live Claude sessions.
+
+Canonical sources are tested directly, and the committed standalone bundle must exactly match the build output. Installer fixtures use temporary folders; loader fixtures use mocked Electron.
+
+All **194 automated cases pass locally** on the tested Intel Mac (Node 26.11.1; Python 3.9.6):
+
+| Layer | Passing cases |
+| --- | ---: |
+| Engine | 77 |
+| Renderer / DOM | 68 |
+| Rendered multi-turn acceptance | 3 |
+| Native loader mocks | 29 |
+| Installer / update / removal fixtures | 17 |
+
+JavaScript syntax, Python compilation, launcher syntax, generated-bundle parity, and diff whitespace checks also pass. [GitHub Actions](https://github.com/codexdimpudim/claude-continue/actions/workflows/tests.yml) runs the full source suite on Linux and macOS with Node 24; inspect the commit's run for its result. CI never launches Claude or sends a message.
+
+The managed local copy was updated without changing its signed app files. All six installed source files match this release. Its real native loader reports `compatible=true` and `bundleReady=true`, and the actual Claude renderer loaded exactly one `2.2.2-mac-preview` widget in `DISABLED`, with no power assertion and no repeated tutorial. The app reopened on its home screen, so its first control-verification wait timed out. After the user opened an existing chat, fresh health confirmed one widget, composer, and Send; the launch check was rerun. This confirms loading, the new exact-ASAR gate, and current-chat controls in the real app. No live continuation was submitted by the audit.
+
+**Still Beta:** no new unrestricted live sends were made during this audit. Previous authorized bounded continuations are recorded below. A fresh real quota-reset cycle, overnight unattended soak, physical network-loss recovery, Apple Silicon hardware, remote UI changes, and enterprise/signing-dependent integrations remain acceptance boundaries. Unknown delivery intentionally pauses rather than retrying.
+
+## Previous release evidence — 2.2.1 Beta
+
 Build: `2.2.1-mac-preview`, based on Claude Desktop `2.31226.1` / Electron `44.4.3`.
 
 ## Automated checks

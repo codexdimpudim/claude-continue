@@ -6,7 +6,7 @@ Automatic continuation controls for Claude Desktop on macOS.
 [![Tests](https://github.com/codexdimpudim/claude-continue/actions/workflows/tests.yml/badge.svg)](https://github.com/codexdimpudim/claude-continue/actions/workflows/tests.yml)
 [![Status: Beta](https://img.shields.io/badge/status-BETA-d99577.svg)](TEST-REPORT.md)
 
-**Current release: 2.2.1 Beta.** Features are available for testing, but sustained unattended operation and recovery through a fresh real usage reset are still being validated. See the [changelog](CHANGELOG.md) and [validation report](TEST-REPORT.md).
+**Current release: 2.2.2 Beta.** This release repairs continuation, recovery, control detection, and local-copy loading failures found in a comprehensive source audit. Sustained unattended operation and recovery through a fresh real usage reset are still being validated. See the [changelog](CHANGELOG.md), [audit coverage](docs/RELIABILITY-AUDIT.md), and [validation report](TEST-REPORT.md). The [previous 2.2.1 Beta](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.1-preview.1) remains available unchanged.
 
 Keep Claude working on a task with a configurable continuation prompt, visible countdown, and clear Start, Pause, Resume, and Stop controls.
 
@@ -21,9 +21,9 @@ Original: 40 seconds · 3840 × 2160 · 60 fps · stereo audio. The inline playe
 
 ![Widget preview](assets/widget-preview.svg)
 
-**Beta release:** 103 automated checks pass. App loading, the widget, Resume, and detection of the real free-message usage notice have been exercised on macOS. A real Start → countdown → send → generation → completed-response sequence was observed earlier. After repairing the October 13 overnight failure, a bounded live test also resumed the actual interrupted chat despite its missing completion marker: one continuation was acknowledged and Claude resumed generation. Sustained unattended loops and recovery after an actual usage reset remain unverified. See [the test report](TEST-REPORT.md).
+**Beta release:** 194 automated checks pass across the state machine, rendered submission path, native loader, and installer. The audit includes a 200-submission simulation with repeated quota/service interruptions and a twelve-turn rendered chat that stops at its cap. These tests run against fixtures, without contacting Claude. Earlier live tests confirmed app loading, usage-notice detection, and a bounded continuation of the interrupted chat. Sustained unattended loops and recovery after an actual usage reset remain unverified. See [the test report](TEST-REPORT.md).
 
-[Installation guide](docs/INSTALLATION.md) · [Usage and settings](docs/USAGE.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Validation report](TEST-REPORT.md) · [Changelog](CHANGELOG.md) · [Code review findings](docs/CODE-REVIEW.md)
+[Installation guide](docs/INSTALLATION.md) · [Usage and settings](docs/USAGE.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Validation report](TEST-REPORT.md) · [Changelog](CHANGELOG.md) · [Reliability audit](docs/RELIABILITY-AUDIT.md)
 
 ## What it does
 
@@ -61,14 +61,14 @@ This is UI automation inside Claude Desktop. It depends on the app’s visible c
 | Claude Desktop | **2.31226.1**, exact inspected ASAR build |
 | Hardware tested | Intel Mac |
 | Apple Silicon | Universal app slices preserved; not tested on hardware |
-| Installation tools | Python 3 and macOS `codesign` / `ditto` |
+| Installation tools | `/usr/bin/python3` 3.8+ and macOS `codesign` / `ditto` |
 | API key or Node for everyday use | Not required |
 
 Unknown app versions stop at the compatibility check. This is an independent project, unaffiliated with Anthropic.
 
 ## Install
 
-1. Download and extract the [2.2.1 Beta](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.1-preview.1). Keep the folder together.
+1. Download and extract the [2.2.2 Beta](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.2-beta.1). Keep the folder together.
 2. Quit Claude and double-click **Install.command**.
 3. Resolve any macOS Keychain prompts yourself. Local signing can trigger them.
 4. Open an existing chat in the local copy. The installer checks for one widget, the composer, and Send.
@@ -84,7 +84,7 @@ On the first launch of this version, a short welcome tour explains the controls.
 
 Open Settings, choose your continuation prompt and limits, then close Settings. Press **Start** in an existing chat. For a completed response, the card checks it and begins a cancellable countdown. During generation, it waits for Claude to finish. Starting during a usage limit preserves the request and schedules the continuation after availability is verified. A quota-interrupted reply may never get a completion toolbar; recovery instead verifies stable idle controls for an extra ten seconds. Start/Resume also handles a previously interrupted task after ten idle seconds, without pretending its reply completed.
 
-Press **Pause** or **Cancel countdown** to cancel pending automation. Press **Resume** after a pause. **Stop** stops the automation without interrupting Claude’s current response. Editing the prompt pauses automation until you resume.
+Press **Pause** or **Cancel countdown** to cancel pending automation. Press **Resume** after a pause. **Stop** stops the automation without interrupting Claude’s current response. Editing the prompt pauses automation until you resume. Copying a response, expanding its details, and moving the text caret with the keyboard do not pause it; editing, submitting, stopping, and changing chats do.
 
 Start explicitly requests continuation of the latest assistant response. An empty chat pauses; send the first request normally. An existing user request with no assistant text can be resumed explicitly. Loading the widget alone never sends a message.
 
@@ -120,8 +120,8 @@ See [the usage guide](docs/USAGE.md) for presets, examples, and the status table
 
 ## Update or remove
 
-- **Update.command** checks the installed app before shutdown, backs up and stages plugin sources, then reopens the local copy. Failed replacements restore the previous sources. The app is not re-signed and preferences remain saved.
-- **Uninstall.command** or **Restore Claude.command** closes and removes the managed copy, verifies the original app’s signature, and opens it. Backups and logs remain.
+- **Update.command** checks the complete source folder, generated bundle, and installed app before shutdown, backs up and stages plugin sources, then reopens the local copy. Failed replacements restore the previous sources. The app is not re-signed and preferences remain saved. After an update, reopen your chat and press Start; automation starts off.
+- **Uninstall.command** or **Restore Claude.command** closes the managed copy, verifies the original app’s signature, then removes the copy and opens the original. Backups and logs remain.
 - **Check Compatibility.command** inspects the installed app without patching it.
 
 Runtime: `~/Library/Application Support/ClaudeAutoContinue/Runtime/`  
@@ -169,7 +169,7 @@ Canonical sources are `lib/engine.js`, `lib/renderer.js`, `macos/loader.cjs`, an
 | `macos/loader.cjs` | Origin-restricted injection, health reporting, metadata logs, and power assertions |
 | `macos/manage.py` | Compatibility inspection, backups, copy patching/signing, source updates, launch, and removal |
 | `macos/compatibility.json` | Inspected Claude version and original ASAR hash |
-| `tests/` | Engine, DOM, mocked-loader, and isolated source-update regression checks |
+| `tests/` | Engine, DOM, rendered multi-turn acceptance, mocked-loader, and isolated installer regression checks |
 | `docs/` | Installation, everyday usage, and troubleshooting guides |
 | `assets/` | Widget illustration, trailer poster, and the original 4K trailer |
 

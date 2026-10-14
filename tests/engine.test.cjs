@@ -52,3 +52,234 @@ test('network recovery cannot silently use the quota-interruption exception',()=
 test('a new user turn cancels a pending interrupted-task continuation',()=>{const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);const s={...base,completed:false,taskHash:'task-1'};e.tick(s,0);e.tick(s,10000);assert.equal(e.tick({...s,taskHash:'task-2'},11000),null);assert.equal(e.lastReason,'RESPONSE_CHANGED');});
 test('generation or human typing prevents an interrupted-task send',()=>{for(const change of [{generating:true},{humanDraft:true}]){const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);const s={...base,completed:false};e.tick(s,0);e.tick(s,10000);assert.equal(e.tick({...s,...change},11000),null);assert.notEqual(e.state,'SENDING_CONTINUE');}});
 test('Start during quota exhaustion retains a user task with no assistant text',()=>{const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);const s={...base,hash:null,completed:false,hasUserTurn:true,taskHash:'blocked-task'};e.tick({...s,error:'RATE_LIMIT'},0);assert.equal(e.resumeNeeded,true);e.tick(s,120000);e.tick(s,125000);e.tick(s,135000);assert.equal(e.tick(s,136000).basis,'quota-recovery');});
+
+test('a semantic usage banner suspends sending when its wording is unfamiliar',()=>{
+  assert.equal(classify({warnings:['Limite atingido'],usageLimitVisible:true}).kind,'RATE_LIMIT');
+  assert.equal(classify({warnings:['Something went wrong'],usageLimitVisible:true}).kind,'RATE_LIMIT');
+  assert.equal(classify({warnings:['Something went wrong']}).kind,'UNKNOWN');
+  assert.equal(classify({online:false,usageLimitVisible:true}).kind,'NETWORK');
+  assert.equal(classify({warnings:['A notification'],usageLimitVisible:false}).kind,null);
+});
+test('unsupported three-letter reset time zones use passive polling',()=>{
+  const now=new Date(2026,9,13,18,0).getTime();
+  for(const zone of ['EST','EDT','PST','PDT','CST','CDT','IST'])assert.equal(resetTime(`Resets at 8 PM ${zone}`,now),null,zone);
+  const e=new Engine();e.arm('chat-1',now,true);e.tick({...base,error:'RATE_LIMIT',resetText:'Resets at 8 PM PST'},now);
+  assert.equal(e.nextCheck,now+120000);
+});
+for(const kind of ['NETWORK','SERVER'])test(`quota recovery survives an intervening ${kind.toLowerCase()} outage`,()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,completed:false,taskHash:'pending-task'};
+  e.tick({...s,error:'RATE_LIMIT'},0);e.tick({...s,error:kind},120000);
+  assert.equal(e.state,'NETWORK_ERROR');assert.equal(e.recoveryBasis,'quota-recovery');
+  e.tick({...s,error:kind},240000);assert.equal(e.stats.count,0);
+  e.tick(s,360000);e.tick(s,365000);e.tick(s,374999);assert.equal(e.state,'RECOVERING');
+  e.tick(s,375000);const action=e.tick(s,376000);
+  assert.equal(action.basis,'quota-recovery');assert.equal(e.tick(s,376001),null);
+});
+test('an unsent explicit interrupted-task request survives a connection outage',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,completed:false,taskHash:'pending-task'};
+  e.tick(s,0);e.tick(s,10000);e.tick({...s,error:'NETWORK'},10500);
+  assert.equal(e.recoveryBasis,'explicit-start');
+  e.tick(s,130500);e.tick(s,135500);e.tick(s,145500);
+  assert.equal(e.tick(s,146500).basis,'explicit-start');
+});
+test('explicit Start while offline retains an interrupted user task until verification succeeds',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,completed:false,hash:null,hasUserTurn:true,taskHash:'pending-task'};
+  e.tick({...s,error:'NETWORK'},0);assert.equal(e.recoveryBasis,'explicit-start');
+  e.tick(s,120000);e.tick(s,125000);e.tick(s,135000);
+  assert.equal(e.tick(s,136000).basis,'explicit-start');
+});
+test('a recovered interrupted countdown preserves quota intent through a later outage',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,completed:false,taskHash:'pending-task'};
+  e.tick({...s,error:'RATE_LIMIT'},0);e.tick(s,120000);e.tick(s,125000);e.tick(s,135000);
+  e.tick({...s,error:'SERVER'},135500);assert.equal(e.recoveryBasis,'quota-recovery');
+  e.tick(s,255500);e.tick(s,260500);e.tick(s,270500);
+  assert.equal(e.tick(s,271500).basis,'quota-recovery');
+});
+for(const kind of ['RATE_LIMIT','NETWORK'])test(`a new task during ${kind.toLowerCase()} waiting cannot inherit the old continuation`,()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,taskHash:'original-task'};
+  e.tick({...s,error:kind},0);
+  assert.equal(e.tick({...s,taskHash:'different-task'},120000),null);
+  assert.equal(e.state,'PAUSED');assert.equal(e.lastReason,'RESPONSE_CHANGED');assert.equal(e.stats.count,0);
+});
+test('a new task during availability verification cancels the original recovery',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,taskHash:'original-task'};
+  e.tick({...s,error:'RATE_LIMIT'},0);e.tick(s,120000);
+  assert.equal(e.tick({...s,taskHash:'different-task'},125000),null);assert.equal(e.lastReason,'RESPONSE_CHANGED');
+});
+test('a changed user task cannot replace countdown intent behind a quota banner',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,taskHash:'original-task'};e.tick(s,0);e.tick(s,2500);
+  e.tick({...s,taskHash:'different-task',error:'RATE_LIMIT'},3000);
+  assert.equal(e.state,'PAUSED');assert.equal(e.lastReason,'RESPONSE_CHANGED');
+});
+test('an identical fast reply is acknowledged by a new stable assistant turn identity',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,responseToken:'count:1'};e.tick(s,0);e.tick(s,2500);
+  const action=e.tick(s,3500);assert.equal(action.responseToken,'count:1');e.sent(action.epoch,3500);
+  const next={...s,responseToken:'count:2'};e.tick(next,4000);
+  assert.equal(e.state,'GENERATING');e.tick(next,4500);e.tick(next,7000);
+  assert.equal(e.state,'COUNTDOWN');assert.equal(e.stats.count,1);
+});
+test('unchanged assistant identity cannot falsely acknowledge an identical stale response',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,responseToken:'count:1'};e.tick(s,0);e.tick(s,2500);
+  const action=e.tick(s,3500);e.sent(action.epoch,3500);
+  e.tick(s,4000);assert.equal(e.state,'WAITING_FOR_GENERATION');
+  e.tick(s,48500);assert.equal(e.lastError,'SEND_NOT_ACKNOWLEDGED');assert.equal(e.stats.count,1);
+});
+test('new assistant identities do not bypass the repeated-text loop safeguard',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0);
+  let s={...base,responseToken:'turn:1'};
+  e.tick({...s,generating:true},0);e.tick(s,500);e.tick(s,3000);
+  for(let i=0;i<2;i++){
+    const action=e.tick(s,e.deadline);assert(action);const sentAt=e.deadline;e.sent(action.epoch,sentAt);
+    s={...s,responseToken:`turn:${i+2}`};e.tick(s,sentAt+100);e.tick(s,sentAt+500);e.tick(s,sentAt+3000);
+  }
+  assert.equal(e.state,'PAUSED');assert.equal(e.lastReason,'DUPLICATE_RESPONSE_LOOP');assert.equal(e.stats.count,2);
+});
+test('a different assistant turn cancels countdown even when its text is identical',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,responseToken:'count:1'};e.tick(s,0);e.tick(s,2500);
+  assert.equal(e.tick({...s,responseToken:'count:2'},3500),null);assert.equal(e.lastReason,'RESPONSE_CHANGED');
+});
+test('a new assistant turn restarts quiet verification despite identical text',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,responseToken:'count:1'};e.tick(s,0);
+  const next={...s,responseToken:'count:2'};e.tick(next,2400);e.tick(next,2500);
+  assert.equal(e.state,'IDLE');e.tick(next,4900);assert.equal(e.state,'COUNTDOWN');
+});
+test('an empty fast response is acknowledged only with a new stable assistant identity',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,responseToken:'turn:1'};e.tick(s,0);e.tick(s,2500);
+  const action=e.tick(s,3500);e.sent(action.epoch,3500);
+  e.tick({...s,hash:null},4000);assert.equal(e.state,'WAITING_FOR_GENERATION');
+  const empty={...s,hash:null,responseToken:'turn:2'};e.tick(empty,4500);assert.equal(e.state,'GENERATING');
+  e.tick(empty,5000);e.tick(empty,7500);assert.equal(e.state,'COUNTDOWN');assert.equal(e.deadline,37500);
+});
+test('quota arriving before our submitted user turn can perform one proven ownership handoff',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,taskHash:'project-request',taskToken:'user:1',responseToken:'assistant:1'};
+  e.tick(s,0);e.tick(s,2500);const action=e.tick(s,3500);e.sent(action.epoch,3500);
+  e.tick({...s,error:'RATE_LIMIT'},4000);assert.equal(e.allowOwnTaskHandoff,true);
+  const submitted={...s,taskHash:'our-continue',taskToken:'user:2',ownSubmittedTask:true};
+  e.tick(submitted,124000);assert.equal(e.state,'RECOVERING');assert.equal(e.allowOwnTaskHandoff,false);
+  e.tick(submitted,129000);const next=e.tick(submitted,130000);
+  assert.equal(next.taskHash,'our-continue');assert.equal(next.taskToken,'user:2');assert.equal(e.stats.count,1);
+});
+test('an unproven new user turn after quota cannot complete our submitted-task handoff',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,taskHash:'project-request',taskToken:'user:1'};
+  e.tick(s,0);e.tick(s,2500);const action=e.tick(s,3500);e.sent(action.epoch,3500);e.tick({...s,error:'RATE_LIMIT'},4000);
+  e.tick({...s,taskHash:'other-request',taskToken:'user:2'},124000);
+  assert.equal(e.lastReason,'RESPONSE_CHANGED');assert.equal(e.stats.count,1);
+});
+test('Stop visible before our user turn and quota notice still permits one proven own-task handoff',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,taskHash:'project-request',taskToken:'user:1',responseToken:'assistant:1'};
+  e.tick(s,0);e.tick(s,2500);const action=e.tick(s,3500);e.sent(action.epoch,3500);
+  e.tick({...s,generating:true},3600);assert.equal(e.state,'GENERATING');
+  const partial={...s,completed:false};e.tick({...partial,error:'RATE_LIMIT'},3700);
+  assert.equal(e.allowOwnTaskHandoff,true);
+  const submitted={...partial,taskHash:'our-continue',taskToken:'user:2',ownSubmittedTask:true},check=e.nextCheck;
+  e.tick(submitted,check);e.tick(submitted,check+5000);e.tick(submitted,check+15000);
+  const next=e.tick(submitted,check+16000);assert.equal(next.basis,'quota-recovery');assert.equal(next.taskToken,'user:2');assert.equal(e.stats.count,1);
+});
+test('acknowledged generation with an early quota notice still rejects an unrelated user turn',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,taskHash:'project-request',taskToken:'user:1'};
+  e.tick(s,0);e.tick(s,2500);const action=e.tick(s,3500);e.sent(action.epoch,3500);
+  e.tick({...s,generating:true},3600);e.tick({...s,completed:false,error:'RATE_LIMIT'},3700);
+  e.tick({...s,taskHash:'other-task',taskToken:'user:2'},e.nextCheck);
+  assert.equal(e.lastReason,'RESPONSE_CHANGED');assert.equal(e.stats.count,1);
+});
+test('the ownership proof cannot authorize task changes without a pending submitted send',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,taskHash:'project-request',taskToken:'user:1'};
+  e.tick({...s,error:'RATE_LIMIT'},0);e.tick({...s,taskHash:'our-continue',taskToken:'user:2',ownSubmittedTask:true},120000);
+  assert.equal(e.lastReason,'RESPONSE_CHANGED');assert.equal(e.stats.count,0);
+});
+test('quota capturing an already appended own turn cannot later adopt another user turn',()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,taskHash:'project-request',taskToken:'user:1'};
+  e.tick(s,0);e.tick(s,2500);const action=e.tick(s,3500);e.sent(action.epoch,3500);
+  const submitted={...s,taskHash:'our-continue',taskToken:'user:2',ownSubmittedTask:true};
+  e.tick({...submitted,error:'RATE_LIMIT'},4000);assert.equal(e.allowOwnTaskHandoff,false);
+  e.tick({...submitted,taskToken:'user:3'},124000);assert.equal(e.lastReason,'RESPONSE_CHANGED');
+});
+for(const waiting of [false,true])test(`identical user text with a different turn identity cancels ${waiting?'quota waiting':'countdown'}`,()=>{
+  const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+  const s={...base,taskHash:'identical-text',taskToken:'user:1'};
+  if(waiting)e.tick({...s,error:'RATE_LIMIT'},0);else{e.tick(s,0);e.tick(s,2500);}
+  e.tick({...s,taskToken:'user:2'},waiting?120000:3500);assert.equal(e.lastReason,'RESPONSE_CHANGED');
+});
+test('new identical responses completed between quota checks still trigger the loop safeguard',()=>{
+  const e=new Engine({delaySeconds:1,maxConsecutive:'unlimited',maxHours:'unlimited'});e.arm('chat-1',0);
+  let s={...base,responseToken:'turn:1'},now=0;
+  e.tick({...s,generating:true},0);e.tick(s,500);e.tick(s,3000);
+  for(let i=0;i<2;i++){
+    now=e.deadline;const action=e.tick(s,now);assert(action);e.sent(action.epoch,now);
+    s={...s,responseToken:`turn:${i+2}`};e.tick({...s,error:'RATE_LIMIT'},now+100);
+    now=e.nextCheck;e.tick(s,now);e.tick(s,now+5000);
+  }
+  assert.equal(e.state,'PAUSED');assert.equal(e.lastReason,'DUPLICATE_RESPONSE_LOOP');assert.equal(e.stats.count,2);
+});
+test('rechecking the same pre-quota response never counts it as another completion',()=>{
+  const e=new Engine({delaySeconds:1,maxHours:'unlimited'});e.arm('chat-1',0);
+  const s={...base,responseToken:'turn:1'};e.tick({...s,generating:true},0);e.tick(s,500);e.tick(s,3000);
+  let now=3100;
+  for(let i=0;i<4;i++){
+    e.tick({...s,error:'RATE_LIMIT'},now);now=e.nextCheck;e.tick(s,now);now+=5000;e.tick(s,now);
+    assert.equal(e.state,'COUNTDOWN');assert.equal(e.repeats,0);now+=100;
+  }
+  assert.equal(e.stats.count,0);
+});
+test('new empty responses completed between quota checks preserve empty-loop protection',()=>{
+  const e=new Engine({delaySeconds:1,maxHours:'unlimited'});e.arm('chat-1',0);
+  const first={...base,hash:null,responseToken:'turn:1'};e.tick({...first,generating:true},0);e.tick(first,500);e.tick(first,3000);
+  const action=e.tick(first,33000);e.sent(action.epoch,33000);
+  const second={...first,responseToken:'turn:2'};e.tick({...second,error:'RATE_LIMIT'},33100);
+  const check=e.nextCheck;e.tick(second,check);e.tick(second,check+5000);
+  assert.equal(e.lastReason,'EMPTY_RESPONSE_LOOP');assert.equal(e.stats.count,1);
+});
+
+test('two hundred acknowledged turns with quota and service outages preserve send invariants and the cap',()=>{
+  const cap=200,e=new Engine({delaySeconds:1,maxConsecutive:cap,maxHours:'unlimited'});
+  e.arm('chat-1',0);let now=0,previousSend=-Infinity;
+  const observe=(s,time)=>{const action=e.tick(s,time);if(action){assert.equal(s.error,null);assert.equal(s.generating,false);assert.equal(s.humanDraft,false);assert.equal(s.ready,true);assert.equal(action.conversation,s.conversation);assert.equal(action.hash,s.hash);assert.equal(action.taskHash,s.taskHash);assert.equal(action.responseToken,s.responseToken);assert.equal(e.tick(s,time),null);}return action;};
+  for(let i=0;i<cap;i++){
+    let s={...base,hash:`reply-${i}`,taskHash:`task-${i}`,responseToken:`turn-${i}`};
+    assert.equal(observe({...s,generating:true},now),null);now+=500;
+    if(i%9===0){
+      s={...s,completed:false};assert.equal(observe({...s,error:'RATE_LIMIT'},now),null);
+      now=e.nextCheck;assert.equal(observe({...s,error:'RATE_LIMIT'},now),null);
+      now=e.nextCheck;assert.equal(observe(s,now),null);now+=5000;assert.equal(observe(s,now),null);now+=10000;assert.equal(observe(s,now),null);
+    }else{assert.equal(observe(s,now),null);now+=2500;assert.equal(observe(s,now),null);}
+    assert.equal(e.state,'COUNTDOWN');
+    if(i%11===0){
+      assert.equal(observe({...s,error:'SERVER'},now+100),null);now=e.nextCheck;
+      assert.equal(observe(s,now),null);now+=5000;assert.equal(observe(s,now),null);
+      if(!s.completed){now+=10000;assert.equal(observe(s,now),null);}
+      assert.equal(e.state,'COUNTDOWN');
+    }
+    now=e.deadline;const action=observe(s,now);assert(action,`turn ${i}`);assert(now-previousSend>=5000);
+    assert.equal(e.sent(action.epoch,now),true);assert.equal(e.sent(action.epoch,now),false);previousSend=now;
+    assert.equal(e.stats.count,i+1);now+=1000;
+  }
+  const last={...base,hash:'final-reply',taskHash:'final-task',responseToken:'final-turn'};
+  observe({...last,generating:true},now);observe(last,now+500);observe(last,now+3000);
+  assert.equal(e.state,'PAUSED');assert.equal(e.lastReason,'MAX_CONTINUATIONS');assert.equal(e.stats.count,cap);assert.equal(e.stats.failures,0);
+});
+test('every pre-send blocking signal prevents an action across completed and explicit interrupted starts',()=>{
+  const changes=[{error:'RATE_LIMIT'},{error:'NETWORK'},{error:'SERVER'},{error:'UNKNOWN'},{generating:true},{humanDraft:true},{ready:false},{conversation:'other-chat'},{taskHash:'other-task'},{hash:'other-response'},{responseToken:'other-turn'}];
+  for(const completed of [true,false])for(const change of changes){
+    const e=new Engine({delaySeconds:1});e.arm('chat-1',0,true);
+    const s={...base,completed,taskHash:'task',responseToken:'turn'};e.tick(s,0);e.tick(s,completed?2500:10000);
+    assert.equal(e.state,'COUNTDOWN');assert.equal(e.tick({...s,...change},e.deadline),null,JSON.stringify({completed,change}));assert.equal(e.stats.count,0);
+  }
+});

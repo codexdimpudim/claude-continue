@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.2.2 Beta — 2026-10-13
+
+**Release status: Beta.** Audited continuation, recovery, renderer controls, background leases, reloads, launch, update, and removal. The previous 2.2.1 Beta release, tag, and downloads remain unchanged.
+
+- Preserve an interrupted task through quota checks that encounter network/service failures. Explicit Start while offline retains its pending request; changed user tasks cancel recovery and countdowns.
+- Recognize explicit usage-limit controls even when their wording is unfamiliar. Time-zone-qualified reset times use passive polling rather than being mistaken for local clock times.
+- Acknowledge fast replies by assistant-turn identity as well as text. Identical replies from distinct turns can be acknowledged; repeated-output loop protection remains active.
+- Handle a quota banner appearing before the plugin's submitted user turn is rendered through a narrowly verified ownership handoff. Distinct user-turn identities cancel stale recovery even when their text matches. Replies completed during passive waiting still count toward empty/duplicate loop protection.
+- Handle multiline rich-text continuation prompts and clear only text owned by a failed insertion. Disabled, hidden, unrelated, and assistant-content Send controls cannot replace the actual composer control.
+- Keep response Copy, detail expansion, and caret movement from unnecessarily pausing automation. Editing, sending, stopping, and changing chats still cancel pending work. Canceling while single-window ownership is being acquired now cancels that activation too.
+- Read current generation controls at the runtime limit so a response that just started can finish before the session pauses.
+- Support a genuine latest-turn Continue control without a composer form. Exclude generated-content and approval controls; pending human approvals pause automation. Failed clicks and removed/damaged widgets cannot leave hidden automation running.
+- Validate replacement bundles before reload, restore the cached working widget after a failed replacement, inject already-loaded Claude pages, and reject stale navigation reports. Same-chat fragment/history navigation preserves automation and active timer/power leases; changed chats still pause. Expired renderer health is released.
+- Verify the copied app's exact ASAR hash inside the native loader, including direct launches. Incomplete packages, stale bundles, stale health, concurrent launchers, signing failures, and replacement failures now have explicit checks and regression coverage.
+- Added rendered multi-turn acceptance checks, interruption/cancellation cases, a deterministic 200-submission state-machine simulation, and a published scenario matrix. All 177 JavaScript and 17 Python cases pass (194 total). Automated evidence does not establish overnight live reliability or bypass server usage limits.
+
 ## 2.2.1 Beta — 2026-10-13
 
 **Release status: Beta.** The interrupted-chat repair passed a bounded live continuation test. A fresh real usage-reset cycle and sustained unattended operation remain unverified.

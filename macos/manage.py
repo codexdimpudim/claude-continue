@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Reversible local-copy installer. Never patches the original Claude.app."""
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
+import math
 import os
 import pathlib
 import plistlib
+import re
 import shutil
-import signal
 import struct
 import subprocess
 import sys
@@ -20,6 +22,21 @@ RUNTIME = BASE / 'Runtime'
 LOGS = pathlib.Path.home() / 'Library/Logs/ClaudeAutoContinue'
 PACKAGE = pathlib.Path(__file__).resolve().parent.parent
 MARKER = 'claude-auto-continue-local-copy-v1'
+SOURCE_FILES = ['lib/engine.js','lib/renderer.js','plugins/auto-continue.js',
+                'macos/loader.cjs','macos/manage.py','macos/compatibility.json']
+
+@contextlib.contextmanager
+def operation_lock():
+    """Prevent two launchers or installers from racing over the same local copy."""
+    import fcntl
+    BASE.mkdir(parents=True,exist_ok=True,mode=0o700)
+    with (BASE/'operation.lock').open('a+') as handle:
+        os.chmod(handle.name,0o600)
+        try:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError('Another Claude Continue operation is already running. Wait for it to finish, then try again.') from error
+        try:yield
+        finally:fcntl.flock(handle,fcntl.LOCK_UN)
 
 def run(*args, timeout=120):
     return subprocess.run([str(x) for x in args], check=True, stdout=subprocess.PIPE,
@@ -40,11 +57,27 @@ def write_json(path, data):
     temporary.replace(path)
 
 def log(event, **fields):
-    LOGS.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path = LOGS/'installation.log'
-    with path.open('a') as f:
-        f.write(json.dumps(dict(time=datetime.datetime.now().astimezone().isoformat(), event=event, **fields))+'\n')
-    path.chmod(0o600)
+    try:
+        LOGS.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = LOGS/'installation.log'
+        with path.open('a') as f:
+            f.write(json.dumps(dict(time=datetime.datetime.now().astimezone().isoformat(), event=event, **fields))+'\n')
+        path.chmod(0o600)
+    except OSError:pass
+
+def verify_sources(root):
+    """A partially downloaded or stale bundle must never replace a working plugin."""
+    if any(not (root/name).is_file() for name in SOURCE_FILES):
+        raise RuntimeError('Plugin source files are missing. Keep the complete package folder together.')
+    engine=(root/'lib/engine.js').read_text();renderer=(root/'lib/renderer.js').read_text()
+    expected=('// Bundled safety engine preserves compatibility with the original one-file loader.\n'
+              'if (typeof window !== "undefined" && !window.ClaudeAutoContinueEngine) {\n'
+              +engine+'\n}\n'+renderer)
+    if not engine.strip() or not renderer.strip() or (root/'plugins/auto-continue.js').read_text()!=expected:
+        raise RuntimeError('Bundled plugin does not match its engine and renderer sources. Download a complete release package, or rebuild the plugin before updating.')
+    version=re.search(r'\bconst\s+VERSION\s*=\s*([\'\"])([0-9A-Za-z.-]{1,64})\1\s*;',renderer)
+    if not version:raise RuntimeError('Plugin renderer version is missing. Download a complete release package.')
+    return version.group(2)
 
 def locate(explicit=None):
     if explicit:
@@ -152,6 +185,7 @@ def modified_files(app):
     return {str(p.relative_to(app)):digest(p) for p in paths if p.is_file()}
 
 def install(app):
+    verify_sources(PACKAGE)
     ensure_closed()
     support=json.loads((PACKAGE/'macos/compatibility.json').read_text())
     print('Verifying original Claude signature and compatibility…',flush=True)
@@ -218,13 +252,32 @@ def verify_installed_app(data):
     if modified_files(RUNTIME/'Claude.app')!=data['patchedHashes']:
         raise RuntimeError('Local app changed or updated. Launch paused; use Restore Claude.command.')
 
+def verified_status(health,pid,renderer_version,started=None):
+    if not isinstance(health,dict) or type(health.get('pid')) is not int or health.get('pid')!=pid:return False
+    stamp=health.get('time')
+    if isinstance(stamp,bool) or not isinstance(stamp,(int,float)) or not math.isfinite(stamp):return False
+    age=time.time()*1000-stamp
+    if age<0 or age>=15000 or (started is not None and stamp<=started*1000):return False
+    renderers=health.get('renderers')
+    return isinstance(renderers,list) and any(isinstance(x,dict) and type(x.get('widgets')) is int and x.get('widgets')==1
+        and x.get('rendererVersion')==renderer_version and x.get('composer') is True and x.get('send') is True for x in renderers)
+
+def check_loader_status(health,pid):
+    if not isinstance(health,dict) or type(health.get('pid')) is not int or health.get('pid')!=pid:return
+    if health.get('compatible') is False:
+        raise RuntimeError('The local loader rejected this Claude version. Use the release that supports your installed build.')
+    if health.get('bundleReady') is False:
+        raise RuntimeError('The local plugin sources could not be loaded. Update from a complete release package.')
+
 def launch():
-    data=load_manifest();verify_installed_app(data)
-    if own_pid():
+    data=load_manifest();verify_installed_app(data);renderer_version=verify_sources(RUNTIME)
+    pid=own_pid()
+    if pid:
         try:
             health=json.loads((RUNTIME/'status.json').read_text())
-            verified=time.time()*1000-health['time']<15000 and any(x.get('widgets')==1 and x.get('composer') and x.get('send') for x in health['renderers'])
-        except (OSError,ValueError,KeyError):verified=False
+            check_loader_status(health,pid)
+            verified=verified_status(health,pid,renderer_version)
+        except (OSError,ValueError):verified=False
         if not verified:raise RuntimeError('The managed copy is running, but its widget and controls are not verified. Open an existing chat, then run Launch again.')
         print('Verified running copy: one widget, composer, and Send control.');return
     ensure_closed()
@@ -239,7 +292,8 @@ def launch():
         if process.poll() is not None:raise RuntimeError('The copied Claude app exited before verification. Original app is intact; use Restore Claude.command.')
         try:
             status=json.loads((RUNTIME/'status.json').read_text())
-            if status['time']>started*1000 and any(x.get('widgets')==1 and x.get('composer') and x.get('send') for x in status['renderers']):
+            check_loader_status(status,process.pid)
+            if verified_status(status,process.pid,renderer_version,started):
                 log('launch-verified',version=data['claudeVersion'])
                 print('Verified: Claude renderer, one widget, composer, and Send control. Automation is OFF.');return
         except (OSError,ValueError,KeyError):pass
@@ -253,7 +307,8 @@ def update():
         raise RuntimeError('The installed app is not compatible with this update.')
     if PACKAGE==RUNTIME:
         raise RuntimeError('Run Update.command from the downloaded package folder.')
-    files=['lib/engine.js','lib/renderer.js','plugins/auto-continue.js','macos/loader.cjs','macos/manage.py','macos/compatibility.json']
+    files=SOURCE_FILES
+    verify_sources(PACKAGE)
     if any(not (PACKAGE/name).is_file() or not (RUNTIME/name).is_file() for name in files):
         raise RuntimeError('Plugin source files are missing. Keep the complete update folder together.')
     verify_installed_app(data)
@@ -320,10 +375,12 @@ def main():
     if sys.platform!='darwin':raise RuntimeError('This installer requires macOS.')
     if os.uname().machine not in ['arm64','x86_64']:raise RuntimeError('Unsupported Mac architecture.')
     if args.action=='detect':print(json.dumps(detect(locate(args.app)),indent=2))
-    elif args.action=='install':install(locate(args.app))
-    elif args.action=='launch':launch()
-    elif args.action=='update':update()
-    else:uninstall()
+    else:
+        with operation_lock():
+            if args.action=='install':install(locate(args.app))
+            elif args.action=='launch':launch()
+            elif args.action=='update':update()
+            else:uninstall()
 
 if __name__=='__main__':
     try:main()
