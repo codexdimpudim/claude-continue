@@ -4,7 +4,9 @@ Automatic continuation controls for Claude Desktop on macOS.
 
 [![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Tests](https://github.com/codexdimpudim/claude-continue/actions/workflows/tests.yml/badge.svg)](https://github.com/codexdimpudim/claude-continue/actions/workflows/tests.yml)
-[![Status: preview](https://img.shields.io/badge/status-preview-d99577.svg)](TEST-REPORT.md)
+[![Status: Beta](https://img.shields.io/badge/status-BETA-d99577.svg)](TEST-REPORT.md)
+
+**Current release: 2.2.1 Beta.** Features are available for testing, but sustained unattended operation and recovery through a fresh real usage reset are still being validated. See the [changelog](CHANGELOG.md) and [validation report](TEST-REPORT.md).
 
 Keep Claude working on a task with a configurable continuation prompt, visible countdown, and clear Start, Pause, Resume, and Stop controls.
 
@@ -19,7 +21,7 @@ Original: 40 seconds · 3840 × 2160 · 60 fps · stereo audio. The inline playe
 
 ![Widget preview](assets/widget-preview.svg)
 
-**Preview release:** 103 automated checks pass. App loading, the widget, Resume, and detection of the real free-message usage notice have been exercised on macOS. A real Start → countdown → send → generation → completed-response sequence was observed earlier. After repairing the October 13 overnight failure, a bounded live test also resumed the actual interrupted chat despite its missing completion marker: one continuation was acknowledged and Claude resumed generation. Sustained unattended loops and recovery after an actual usage reset remain unverified. See [the test report](TEST-REPORT.md).
+**Beta release:** 103 automated checks pass. App loading, the widget, Resume, and detection of the real free-message usage notice have been exercised on macOS. A real Start → countdown → send → generation → completed-response sequence was observed earlier. After repairing the October 13 overnight failure, a bounded live test also resumed the actual interrupted chat despite its missing completion marker: one continuation was acknowledged and Claude resumed generation. Sustained unattended loops and recovery after an actual usage reset remain unverified. See [the test report](TEST-REPORT.md).
 
 [Installation guide](docs/INSTALLATION.md) · [Usage and settings](docs/USAGE.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Validation report](TEST-REPORT.md) · [Changelog](CHANGELOG.md) · [Code review findings](docs/CODE-REVIEW.md)
 
@@ -66,7 +68,7 @@ Unknown app versions stop at the compatibility check. This is an independent pro
 
 ## Install
 
-1. Download and extract the [2.2.1 preview](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.1-preview.1). Keep the folder together.
+1. Download and extract the [2.2.1 Beta](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.1-preview.1). Keep the folder together.
 2. Quit Claude and double-click **Install.command**.
 3. Resolve any macOS Keychain prompts yourself. Local signing can trigger them.
 4. Open an existing chat in the local copy. The installer checks for one widget, the composer, and Send.

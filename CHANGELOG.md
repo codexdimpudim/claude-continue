@@ -1,13 +1,14 @@
 # Changelog
 
-## 2.2.1 preview — 2026-10-13
+## 2.2.1 Beta — 2026-10-13
+
+**Release status: Beta.** The interrupted-chat repair passed a bounded live continuation test. A fresh real usage-reset cycle and sustained unattended operation remain unverified.
 
 - Fixed the overnight failure reproduced from the real 12:20 AM quota-reset logs: recovery reached a countdown, then paused because a quota-interrupted reply had no completion toolbar.
 - Verified quota recovery now distinguishes an interrupted task from a normally completed response. Incomplete replies get an additional ten-second stable-idle check before a cancellable countdown; ordinary automatic completion retains its completion-marker requirement.
 - Explicit Start/Resume can resume a stable interrupted reply after ten idle seconds, including an existing user task that produced no assistant text. Empty chats still do not send.
 - Pin the latest user turn as well as the assistant response during countdown and submission. Streaming/busy metadata also prevents sending.
-- Added eleven regressions for overnight recovery, the already-stuck chat, draft/generation cancellation, task changes, network ambiguity, and quota reappearing during submission. 98 JavaScript and five Python cases pass (103 total).
-
+- Added regression coverage for overnight recovery, the already-stuck chat, draft/generation cancellation, task changes, network ambiguity, quota reappearing during submission, and one-send activation without changing saved preferences. 98 JavaScript and five Python cases pass (103 total).
 - A one-continuation live test resumed the actual interrupted chat and observed generation. The test stopped automation after one acknowledged send; regular unattended operation still needs observation.
 
 ## 2.2.0 preview — 2026-10-12
