@@ -1,5 +1,7 @@
 # Reliability audit — 2.2.2 Beta
 
+The [2.2.3 launch/repair report](../TEST-REPORT.md#223-beta-launchrepair--october-14-2026) adds coverage for vendor updates replacing the copied app, exact-path foreground launch, home health, preserved-source compatibility, queued-update refusal, and staged repair. Its 216 passing cases extend the audit below; prior releases remain unchanged.
+
 Date: October 13, 2026. Scope: the complete tracked plugin source, generated bundle, native loader, local-copy installer, launch/update/removal scripts, saved settings, and continuation safeguards. The 2.2.1 Beta release is retained unchanged.
 
 The audit repaired reproducible blockers and added regression cases at the layer where each failure occurred. It does **not** prove successful completion in every possible Claude, network, macOS, or project state. A deliberate pause for human input, uncertain delivery, or a configured cap is expected behavior.

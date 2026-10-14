@@ -6,7 +6,7 @@ Automatic continuation controls for Claude Desktop on macOS.
 [![Tests](https://github.com/codexdimpudim/claude-continue/actions/workflows/tests.yml/badge.svg)](https://github.com/codexdimpudim/claude-continue/actions/workflows/tests.yml)
 [![Status: Beta](https://img.shields.io/badge/status-BETA-d99577.svg)](TEST-REPORT.md)
 
-**Current release: 2.2.2 Beta.** This release repairs continuation, recovery, control detection, and local-copy loading failures found in a comprehensive source audit. Sustained unattended operation and recovery through a fresh real usage reset are still being validated. See the [changelog](CHANGELOG.md), [audit coverage](docs/RELIABILITY-AUDIT.md), and [validation report](TEST-REPORT.md). The [previous 2.2.1 Beta](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.1-preview.1) remains available unchanged.
+**Current release: 2.2.3 Beta.** Launch now foregrounds the installed local copy, and its vendor updater is blocked before it can replace the app and erase the plugin. Repair rebuilds a missing or overwritten copy from a verified supported backup. Sustained unattended operation and a fresh real usage-reset cycle remain acceptance checks. See the [changelog](CHANGELOG.md), [audit coverage](docs/RELIABILITY-AUDIT.md), and [validation report](TEST-REPORT.md). The [previous 2.2.2 Beta](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.2-beta.1) remains unchanged.
 
 Keep Claude working on a task with a configurable continuation prompt, visible countdown, and clear Start, Pause, Resume, and Stop controls.
 
@@ -21,7 +21,7 @@ Original: 40 seconds · 3840 × 2160 · 60 fps · stereo audio. The inline playe
 
 ![Widget preview](assets/widget-preview.svg)
 
-**Beta release:** 194 automated checks pass across the state machine, rendered submission path, native loader, and installer. The audit includes a 200-submission simulation with repeated quota/service interruptions and a twelve-turn rendered chat that stops at its cap. These tests run against fixtures, without contacting Claude. Earlier live tests confirmed app loading, usage-notice detection, and a bounded continuation of the interrupted chat. Sustained unattended loops and recovery after an actual usage reset remain unverified. See [the test report](TEST-REPORT.md).
+**Beta release:** 216 automated checks cover the state machine, rendered submission path, native loader, and installer. The audit includes a 200-submission simulation with repeated quota/service interruptions and a twelve-turn rendered chat that stops at its cap. These tests run against fixtures, without contacting Claude. Earlier live tests confirmed app loading, usage-notice detection, and a bounded continuation of the interrupted chat. Sustained unattended loops and recovery after an actual usage reset remain unverified. See [the test report](TEST-REPORT.md).
 
 [Installation guide](docs/INSTALLATION.md) · [Usage and settings](docs/USAGE.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Validation report](TEST-REPORT.md) · [Changelog](CHANGELOG.md) · [Reliability audit](docs/RELIABILITY-AUDIT.md)
 
@@ -68,11 +68,11 @@ Unknown app versions stop at the compatibility check. This is an independent pro
 
 ## Install
 
-1. Download and extract the [2.2.2 Beta](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.2-beta.1). Keep the folder together.
+1. Download and extract the [2.2.3 Beta](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.3-beta.1). Keep the folder together.
 2. Quit Claude and double-click **Install.command**.
 3. Resolve any macOS Keychain prompts yourself. Local signing can trigger them.
 4. Open an existing chat in the local copy. The installer checks for one widget, the composer, and Send.
-5. Use **Launch.command** to reopen this copy later. Opening the original Claude app loads the original app.
+5. Use **Launch.command** to open or foreground this copy later. The new launcher uses the installed manager, so you can keep using it after source updates. Replace launchers from releases before 2.2.3 with the new one. Opening the original Claude app loads the original app.
 
 You can also use [Download source](https://github.com/codexdimpudim/claude-continue/archive/refs/heads/main.zip).
 
@@ -121,6 +121,7 @@ See [the usage guide](docs/USAGE.md) for presets, examples, and the status table
 ## Update or remove
 
 - **Update.command** checks the complete source folder, generated bundle, and installed app before shutdown, backs up and stages plugin sources, then reopens the local copy. Failed replacements restore the previous sources. The app is not re-signed and preferences remain saved. After an update, reopen your chat and press Start; automation starts off.
+- **Repair.command** rebuilds a missing or vendor-overwritten local app from the exact supported signed baseline. Quit Claude first. It can find a preserved installation backup if the original app has since updated; an unsupported app is never patched. Existing runtime files are archived before replacement, and failed activation restores them.
 - **Uninstall.command** or **Restore Claude.command** closes the managed copy, verifies the original app’s signature, then removes the copy and opens the original. Backups and logs remain.
 - **Check Compatibility.command** inspects the installed app without patching it.
 
@@ -130,11 +131,14 @@ Logs: `~/Library/Logs/ClaudeAutoContinue/`
 
 These existing internal names remain unchanged for upgrade compatibility. Logs store operational metadata, not chat URLs, prompt text, or message bodies. Prompts stay in renderer localStorage. Response fingerprints stay in memory.
 
+The managed copy stays on the inspected Claude build. Its native vendor update entry points are blocked before startup because replacing the app removes the plugin hook. The original Claude app keeps its ordinary update behavior. New Claude builds require compatibility review and a deliberate rebuild. Shared updater cache and account preferences are not cleared; a downloaded update already queued for the local copy is a stop condition until it can be resolved safely.
+
 ## Troubleshooting
 
 | What you see | First thing to check |
 | --- | --- |
 | No widget | Open the managed copy using Launch.command, then open an existing chat |
+| The local app updated and the widget disappeared | Quit Claude, extract the latest release, and use Repair.command; a verified supported backup is required |
 | Paused after a settings change | Close Settings and press Resume |
 | Your message is still in the composer | Send or clear your draft yourself, then Resume |
 | Waiting for usage reset | Leave the wait active; it checks passively and does not bypass usage limits |
@@ -176,6 +180,7 @@ Canonical sources are `lib/engine.js`, `lib/renderer.js`, `macos/loader.cjs`, an
 ## Current limitations
 
 - Only the exact listed Claude build is accepted. UI changes can require new selectors even when the desktop version remains the same.
+- The managed copy is deliberately pinned; it does not receive vendor app updates automatically. Keep using the original app for current vendor features, and require compatibility review before upgrading the copied baseline.
 - A successful live continuation has been observed; reliable multihour unattended operation has not been established. A later submission hit the acknowledgment timeout and paused, so the live check is not a completed soak test.
 - Actual quota-reset recovery is simulated in tests but has not been fully observed live. A stale usage notice can need manual refresh.
 - Apple Silicon hardware, physical network-loss recovery, enterprise authentication, and all signing-dependent integrations remain unverified.

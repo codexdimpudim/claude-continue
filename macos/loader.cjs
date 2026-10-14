@@ -1,6 +1,6 @@
 // macOS adapter for the upstream web-contents-created / executeJavaScript loader.
 // Installs only Auto Continue; never loads the upstream version-spoof plugin.
-const {app,powerSaveBlocker,shell,webContents}=require('electron');
+const {app,powerSaveBlocker,shell,webContents,autoUpdater}=require('electron');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),vm=require('node:vm'),crypto=require('node:crypto');
 const root=path.resolve(__dirname,'..');
 const logDir=path.join(os.homedir(),'Library/Logs/ClaudeAutoContinue');
@@ -8,7 +8,7 @@ try{fs.mkdirSync(logDir,{recursive:true,mode:0o700});}catch{}
 const logPath=path.join(logDir,'auto-continue.log');
 const statusPath=path.join(root,'status.json');
 const STATES=['DISABLED','IDLE','GENERATING','FINISHED','COUNTDOWN','SENDING_CONTINUE','WAITING_FOR_GENERATION','RATE_LIMITED','WAITING_FOR_USAGE_RESET','CHECKING_AVAILABILITY','NETWORK_ERROR','RECOVERING','PAUSED','ERROR','STOPPED'];
-let assertion=null,shuttingDown=false,powerFailed=false,failedReload=null;
+let assertion=null,shuttingDown=false,powerFailed=false,failedReload=null,vendorUpdatesBlocked=false;
 const health=new Map(),leases=new Map(),attached=new WeakSet(),throttling=new Map(),epochs=new WeakMap(),injecting=new WeakMap(),documents=new WeakMap();
 function log(event,fields={}){
   try{
@@ -37,7 +37,7 @@ function updatePower(){
   if(active&&assertion===null){try{assertion=powerSaveBlocker.start('prevent-app-suspension');powerFailed=false;log('power-started');}catch{if(!powerFailed)log('power-unavailable');powerFailed=true;}}
   if(!active){release();powerFailed=false;}
 }
-function status(){try{fs.writeFileSync(statusPath,JSON.stringify({pid:process.pid,version:app.getVersion(),loaderVersion:'2.2.2',time:Date.now(),compatible,bundleReady:!!bundle,powerAssertion:assertion!==null,renderers:[...health.values()]}),{mode:0o600});}catch{}}
+function status(){try{fs.writeFileSync(statusPath,JSON.stringify({pid:process.pid,version:app.getVersion(),loaderVersion:'2.2.3',time:Date.now(),compatible,bundleReady:!!bundle,vendorUpdatesBlocked,powerAssertion:assertion!==null,renderers:[...health.values()]}),{mode:0o600});}catch{}}
 function message(contents,args){
   if(shuttingDown||!compatible||!bundle||!allowed(contents))return;
   const detail=args[0];const message=typeof detail?.message==='string'?detail.message:args[1];
@@ -46,7 +46,7 @@ function message(contents,args){
   if(!data||typeof data!=='object'||Array.isArray(data))return;
   if(data.event==='heartbeat'){
     if(data.rendererVersion!==bundle.version){drop(contents);return;}
-    activeTimers(contents,data.active===true);leases.set(contents.id,{contents,time:Date.now(),active:data.active===true,keepAwake:data.keepAwake===true});if(STATES.includes(data.state))health.set(contents.id,{widgets:data.widgets===1?1:0,composer:data.composer===true,send:data.send===true,state:data.state,rendererVersion:bundle.version,tutorialVisible:data.tutorialVisible===true});
+    activeTimers(contents,data.active===true);leases.set(contents.id,{contents,time:Date.now(),active:data.active===true,keepAwake:data.keepAwake===true});if(STATES.includes(data.state))health.set(contents.id,{widgets:data.widgets===1?1:0,composer:data.composer===true,send:data.send===true,home:data.home===true,state:data.state,rendererVersion:bundle.version,tutorialVisible:data.tutorialVisible===true});
     updatePower();return;
   }
   if(data.event==='open-logs'){try{Promise.resolve(shell.openPath(logDir)).catch(()=>log('open-logs-failed'));}catch{log('open-logs-failed');}return;}
@@ -71,10 +71,26 @@ let compatible=false,bundle=null;
 try{
   const manifest=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'),'utf8'));
   const expected=manifest.patchedHashes?.['Contents/Resources/app.asar'];
-  compatible=manifest.claudeVersion===app.getVersion()&&typeof expected==='string'&&/^[a-f0-9]{64}$/.test(expected)
+  compatible=manifest.marker==='claude-auto-continue-local-copy-v1'&&manifest.claudeVersion===app.getVersion()&&typeof expected==='string'&&/^[a-f0-9]{64}$/.test(expected)
     // Electron's patched fs treats ASAR as a directory; original-fs reads its actual bytes.
     &&crypto.createHash('sha256').update(require('original-fs').readFileSync(path.join(process.resourcesPath,'app.asar'))).digest('hex')===expected;
 }catch{log('manifest-unavailable');}
+// A vendor update replaces the entire copied app and erases its ASAR hook.
+// The inspected build uses these native entry points. Block them before its
+// code runs, only after verifying this managed copy's exact version/hash.
+if(compatible){
+  try{
+    if(!autoUpdater)throw new Error('Native updater unavailable');
+    for(const operation of ['setFeedURL','checkForUpdates','quitAndInstall']){
+      const blocked=()=>{
+        log('vendor-update-blocked',{operation});
+        if(operation==='checkForUpdates')Promise.resolve().then(()=>autoUpdater.emit('update-not-available')).catch(()=>log('update-status-unavailable'));
+      };
+      Object.defineProperty(autoUpdater,operation,{value:blocked,writable:false,configurable:false});
+    }
+    vendorUpdatesBlocked=true;log('vendor-updates-pinned');
+  }catch{compatible=false;log('vendor-update-guard-unavailable');}
+}
 try{bundle=readBundle();}catch{log('plugin-source-unavailable');}
 async function injectPluginsIntoContents(contents){
   if(shuttingDown||contents.isDestroyed()||!allowed(contents)||!compatible||!bundle)return false;
@@ -84,14 +100,14 @@ async function injectPluginsIntoContents(contents){
   const selected=bundle;
   const promise=(async()=>{
   try{
-    const meta={claudeVersion:app.getVersion(),loaderVersion:'2.2.2',compatibility:'Beta; sustained live automation still being validated'};
+    const meta={claudeVersion:app.getVersion(),loaderVersion:'2.2.3',compatibility:'Beta; sustained live automation still being validated'};
     // A navigation can finish while executeJavaScript is queued. Check the actual document too.
     await contents.executeJavaScript(`if(location.protocol==='https:'&&['claude.ai','www.claude.ai'].includes(location.hostname)){window.__CLAUDE_AC_META=${JSON.stringify(meta)};\n${selected.engine}\n${selected.plugin}\n}`);
     if(!current())return false;
     const report=await contents.executeJavaScript('window.claudeAutoContinue?.diagnostics()');
     if(!current())return false;
     const valid=report?.version===selected.version&&STATES.includes(report?.state);
-    if(valid)health.set(contents.id,{widgets:report.widgets===1?1:0,composer:report.composer===true,send:report.send===true,state:report.state,rendererVersion:selected.version,tutorialVisible:report.tutorialVisible===true});
+    if(valid)health.set(contents.id,{widgets:report.widgets===1?1:0,composer:report.composer===true,send:report.send===true,home:report.home===true,state:report.state,rendererVersion:selected.version,tutorialVisible:report.tutorialVisible===true});
     else health.delete(contents.id);
     log('injection',{widgets:report?.widgets===1?1:0,composer:report?.composer===true,send:report?.send===true,generating:report?.signals?.generating===true,completed:report?.signals?.completed===true,resumable:report?.signals?.resumable===true,hasResponse:report?.signals?.hasResponse===true,hasUserTurn:report?.signals?.hasUserTurn===true,ready:report?.signals?.ready===true,error:['RATE_LIMIT','NETWORK','SERVER','UNKNOWN','HUMAN_APPROVAL_REQUIRED'].includes(report?.signals?.error)?report.signals.error:'NONE',humanDraft:report?.signals?.humanDraft===true,directControl:report?.signals?.directControl===true,directInsideResponse:report?.signals?.directInsideResponse===true});status();
     return valid&&report.widgets===1;

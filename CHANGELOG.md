@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.2.3 Beta — 2026-10-14
+
+- Fixed the launcher doing nothing when the managed process was already running: it now foregrounds/reopens the exact local app before checking health. Cold launches also use macOS Launch Services with the exact bundle path.
+- Launch.command uses the installed manager so a stale extracted package does not control the current installation.
+- Fixed vendor app updates erasing the ASAR hook and removing the widget. The exact verified managed copy blocks native feed initialization, update checks, and update installation before vendor startup. The original app is unaffected.
+- Added Repair.command for a missing or overwritten Runtime. It verifies the supported vendor-signed source, builds and signs a staged copy, preserves backups/preferences/logs, swaps directories, and restores the previous runtime if activation fails.
+- Preserve the baseline source separately from the current native restore target. The original can update independently while the copied app remains bound to its exact supported baseline.
+- Distinguish a loaded home-screen widget from verified chat controls. Launch can finish at home without a three-minute false failure; it does not enable automation.
+- Detect an already queued vendor update targeting the local copy without clearing shared updater state. Updates targeting the original app do not block the copy.
+- Regression coverage totals 183 JavaScript and 33 Python cases (216 total). No live Claude messages are needed for launch/repair verification. Release remains Beta; overnight operation and a fresh real usage reset remain unverified.
+
 ## 2.2.2 Beta — 2026-10-13
 
 **Release status: Beta.** Audited continuation, recovery, renderer controls, background leases, reloads, launch, update, and removal. The previous 2.2.1 Beta release, tag, and downloads remain unchanged.

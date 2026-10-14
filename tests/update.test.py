@@ -120,18 +120,67 @@ class UpdateTests(unittest.TestCase):
     def test_malformed_live_health_reports_unverified_instead_of_crashing(self):
         with tempfile.TemporaryDirectory() as tmp:
             base,runtime,package=self.fixture(tmp);(runtime/'status.json').write_text('[]')
-            with patch.multiple(manage,BASE=base,RUNTIME=runtime,PACKAGE=package),patch.object(manage,'verify_installed_app'),patch.object(manage,'own_pid',return_value=42):
-                with self.assertRaisesRegex(RuntimeError,'not verified'):manage.launch()
+            with patch.multiple(manage,BASE=base,RUNTIME=runtime,PACKAGE=package),patch.object(manage,'verify_installed_app'),patch.object(manage,'own_pid',return_value=42),patch.object(manage,'run') as run,patch.object(manage.time,'sleep'),patch.object(manage,'log'):
+                self.assertFalse(manage.launch())
+                run.assert_called_once_with('/usr/bin/open','-a',runtime/'Claude.app')
     def test_loader_source_failure_is_reported_without_waiting_three_minutes(self):
         with tempfile.TemporaryDirectory() as tmp:
             base,runtime,package=self.fixture(tmp);(runtime/'status.json').write_text(json.dumps({'pid':42,'bundleReady':False}))
-            with patch.multiple(manage,BASE=base,RUNTIME=runtime,PACKAGE=package),patch.object(manage,'verify_installed_app'),patch.object(manage,'own_pid',return_value=42):
+            with patch.multiple(manage,BASE=base,RUNTIME=runtime,PACKAGE=package),patch.object(manage,'verify_installed_app'),patch.object(manage,'own_pid',return_value=42),patch.object(manage,'run'),patch.object(manage.time,'sleep'):
                 with self.assertRaisesRegex(RuntimeError,'could not be loaded'):manage.launch()
     def test_stale_status_from_another_process_cannot_report_a_loader_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             base,runtime,package=self.fixture(tmp);(runtime/'status.json').write_text(json.dumps({'pid':99,'bundleReady':False,'compatible':False}))
-            with patch.multiple(manage,BASE=base,RUNTIME=runtime,PACKAGE=package),patch.object(manage,'verify_installed_app'),patch.object(manage,'own_pid',return_value=42):
-                with self.assertRaisesRegex(RuntimeError,'not verified'):manage.launch()
+            with patch.multiple(manage,BASE=base,RUNTIME=runtime,PACKAGE=package),patch.object(manage,'verify_installed_app'),patch.object(manage,'own_pid',return_value=42),patch.object(manage,'run'),patch.object(manage.time,'sleep'),patch.object(manage,'log'):
+                self.assertFalse(manage.launch())
+    def test_existing_running_copy_is_foregrounded_without_starting_another_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base,runtime,package=self.fixture(tmp)
+            health={'pid':42,'time':1000001,'renderers':[{'widgets':1,'composer':True,'send':True,'rendererVersion':'fixture-mac-preview'}]}
+            (runtime/'status.json').write_text(json.dumps(health))
+            with patch.multiple(manage,BASE=base,RUNTIME=runtime,PACKAGE=package),patch.object(manage,'verify_installed_app'),patch.object(manage,'own_pid',return_value=42),patch.object(manage,'run') as run,patch.object(manage.time,'time',return_value=1000.002),patch.object(manage,'log'),patch.object(manage.subprocess,'Popen') as popen:
+                self.assertTrue(manage.launch())
+                run.assert_called_once_with('/usr/bin/open','-a',runtime/'Claude.app')
+                popen.assert_not_called()
+    def test_cold_launch_foregrounds_exact_copy_and_accepts_loaded_home_without_chat_controls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base,runtime,package=self.fixture(tmp)
+            def run(*args,**kwargs):
+                self.assertEqual(args,('/usr/bin/open','-n','-a',runtime/'Claude.app'))
+                (runtime/'status.json').write_text(json.dumps({'pid':42,'time':1000001,'renderers':[{'widgets':1,'home':True,'state':'DISABLED','composer':False,'send':False,'rendererVersion':'fixture-mac-preview'}]}))
+            with patch.multiple(manage,BASE=base,RUNTIME=runtime,PACKAGE=package),patch.object(manage,'verify_installed_app'),patch.object(manage,'own_pid',side_effect=[None,42]),patch.object(manage,'ensure_closed'),patch.object(manage,'run',side_effect=run),patch.object(manage.time,'time',side_effect=[1000,1000.002,1000.002]),patch.object(manage.time,'sleep') as sleep,patch.object(manage,'log') as log:
+                self.assertTrue(manage.launch())
+                sleep.assert_not_called()
+                log.assert_called_once_with('launch-widget-loaded',version='test')
+    def test_home_loading_is_distinct_from_chat_readiness_and_requires_paused_state(self):
+        health={'pid':42,'time':999000,'renderers':[{'widgets':1,'home':True,'state':'DISABLED','rendererVersion':'fixture-mac-preview'}]}
+        with patch.object(manage.time,'time',return_value=1000):
+            self.assertTrue(manage.verified_status(health,42,'fixture-mac-preview',home=True))
+            self.assertFalse(manage.verified_status(health,42,'fixture-mac-preview'))
+            for state in ['GENERATING','COUNTDOWN','WAITING',None]:
+                bad=dict(health,renderers=[dict(health['renderers'][0],state=state)])
+                self.assertFalse(manage.verified_status(bad,42,'fixture-mac-preview',home=True))
+            self.assertFalse(manage.verified_status(dict(health,pid=9),42,'fixture-mac-preview',home=True))
+            self.assertFalse(manage.verified_status(dict(health,time=984000),42,'fixture-mac-preview',home=True))
+    def test_failed_updater_guard_blocks_launch_readiness(self):
+        with self.assertRaisesRegex(RuntimeError,'vendor updater'):
+            manage.check_loader_status({'pid':42,'vendorUpdatesBlocked':False},42)
+        manage.check_loader_status({'pid':99,'vendorUpdatesBlocked':False},42)
+    def test_pending_vendor_update_gate_only_blocks_existing_payload_for_exact_local_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=pathlib.Path(tmp);runtime=base/'Runtime';state=base/'ShipItState.plist'
+            payload=base/'update.payload/Claude.app';payload.mkdir(parents=True)
+            prior={'targetBundleURL':(runtime/'Claude.app').as_uri(),'updateBundleURL':payload.as_uri()}
+            with patch.multiple(manage,RUNTIME=runtime,SHIPIT_STATE=state):
+                state.write_text(json.dumps(prior));original=state.read_bytes()
+                with self.assertRaisesRegex(RuntimeError,'vendor update is queued'):manage.check_pending_vendor_update()
+                self.assertEqual(state.read_bytes(),original)
+                state.write_text(json.dumps(dict(prior,targetBundleURL=(base/'Original Claude.app').as_uri())))
+                manage.check_pending_vendor_update()
+                state.write_text(json.dumps(dict(prior,updateBundleURL=(base/'missing payload/Claude.app').as_uri())))
+                manage.check_pending_vendor_update()
+                state.write_text('[]');manage.check_pending_vendor_update()
+                state.write_text('unreadable JSON');manage.check_pending_vendor_update()
     def test_uninstall_preserves_original_backup_and_preferences(self):
         with tempfile.TemporaryDirectory() as tmp:
             base,runtime,package=self.fixture(tmp);original,backup,preferences=self.original_fixture(base,runtime)
@@ -164,4 +213,149 @@ class UpdateTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'Original app is missing'):manage.uninstall()
                 run.assert_not_called()
             self.assertTrue(runtime.exists())
+    def repair_fixture(self,tmp):
+        base,runtime,package=self.fixture(tmp)
+        original,_,preferences=self.original_fixture(base,runtime)
+        source=base/'Baseline Claude.app';source.mkdir();(source/'signed-file').write_text('supported vendor app')
+        logs=base/'Logs';logs.mkdir();(logs/'history.log').write_text('existing log')
+        return base,runtime,package,original,source,preferences,logs
+    def repair_mocks(self,base,runtime,package,original,source,logs):
+        import contextlib
+        stack=contextlib.ExitStack()
+        stack.enter_context(patch.multiple(manage,BASE=base,RUNTIME=runtime,PACKAGE=package,LOGS=logs))
+        stack.enter_context(patch.object(manage,'locate',side_effect=lambda explicit=None:pathlib.Path(explicit) if explicit else original))
+        def detect(app):
+            self.assertTrue((app/'signed-file').exists())
+            return {'path':str(app),'version':'new-native' if app==original else 'test','asarHash':'new-native-hash' if app==original else 'hash','vendorSigned':True}
+        stack.enter_context(patch.object(manage,'detect',side_effect=detect))
+        stack.enter_context(patch.object(manage,'modified_files',side_effect=lambda app:{'signed-file':manage.digest(app/'signed-file')}))
+        def run(*args,**kwargs):
+            self.assertEqual(args[0],'/usr/bin/ditto')
+            manage.shutil.copytree(args[1],args[2])
+        stack.enter_context(patch.object(manage,'run',side_effect=run))
+        stack.enter_context(patch.object(manage,'patch_asar',side_effect=lambda app:(app/'signed-file').write_text('patched local copy')))
+        stack.enter_context(patch.object(manage,'sign_copy'))
+        stack.enter_context(patch.object(manage,'ensure_closed'))
+        stack.enter_context(patch.object(manage,'log'))
+        stack.enter_context(patch.object(manage,'launch'))
+        return stack
+    def test_repair_preserves_previous_runtime_native_original_preferences_and_logs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base,runtime,package,original,source,preferences,logs=self.repair_fixture(tmp)
+            with self.repair_mocks(base,runtime,package,original,source,logs):
+                manage.repair(source)
+                manage.launch.assert_called_once()
+            manifest=json.loads((runtime/'manifest.json').read_text())
+            self.assertEqual(manifest['source']['version'],'test')
+            self.assertEqual(pathlib.Path(manifest['source']['path'])/'signed-file',pathlib.Path(manifest['backup'])/'Claude.app/signed-file')
+            self.assertEqual(manifest['original']['path'],str(original))
+            self.assertEqual(manifest['original']['version'],'new-native')
+            self.assertEqual((pathlib.Path(manifest['previousRuntime'])/'Claude.app/Contents/signed-file').read_text(),'untouched')
+            self.assertEqual((runtime/'Claude.app/signed-file').read_text(),'patched local copy')
+            self.assertEqual((runtime/'lib/engine.js').read_text(),'new')
+            self.assertEqual((original/'signed-file').read_text(),'vendor app')
+            self.assertEqual(preferences.read_text(),'account data')
+            self.assertEqual((logs/'history.log').read_text(),'existing log')
+            self.assertFalse(list(base.glob('.repair-*')))
+    def test_repair_recovers_a_missing_runtime_from_verified_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base,runtime,package,original,source,preferences,logs=self.repair_fixture(tmp)
+            backup=base/'Backups/Claude-test-preserved/Claude.app';backup.parent.mkdir();source.rename(backup)
+            manage.shutil.rmtree(runtime)
+            with self.repair_mocks(base,runtime,package,original,backup,logs):manage.repair()
+            manifest=json.loads((runtime/'manifest.json').read_text())
+            self.assertIsNone(manifest['previousRuntime'])
+            self.assertEqual((runtime/'Claude.app/signed-file').read_text(),'patched local copy')
+            self.assertEqual((backup/'signed-file').read_text(),'supported vendor app')
+            self.assertEqual(preferences.read_text(),'account data')
+    def test_repair_refuses_unknown_source_before_backing_up_or_changing_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base,runtime,package,original,source,preferences,logs=self.repair_fixture(tmp)
+            with self.repair_mocks(base,runtime,package,original,source,logs),patch.object(manage,'detect',return_value={'version':'unknown','asarHash':'different','vendorSigned':True}):
+                with self.assertRaisesRegex(RuntimeError,'tested baseline'):manage.repair(source)
+                manage.run.assert_not_called()
+                manage.launch.assert_not_called()
+            self.assertEqual((runtime/'lib/engine.js').read_text(),'old')
+            self.assertFalse(list(base.glob('.repair-*')))
+    def test_repair_refuses_insufficient_disk_space_before_copying(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base,runtime,package,original,source,preferences,logs=self.repair_fixture(tmp)
+            from types import SimpleNamespace
+            with self.repair_mocks(base,runtime,package,original,source,logs),patch.object(manage.shutil,'disk_usage',return_value=SimpleNamespace(free=1)):
+                with self.assertRaisesRegex(RuntimeError,'3 GB'):manage.repair(source)
+                manage.run.assert_not_called()
+            self.assertEqual((runtime/'lib/engine.js').read_text(),'old')
+    def test_failed_repair_signing_leaves_previous_runtime_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base,runtime,package,original,source,preferences,logs=self.repair_fixture(tmp)
+            with self.repair_mocks(base,runtime,package,original,source,logs),patch.object(manage,'sign_copy',side_effect=RuntimeError('signing failed')):
+                with self.assertRaisesRegex(RuntimeError,'signing failed'):manage.repair(source)
+                manage.launch.assert_not_called()
+            self.assertEqual((runtime/'lib/engine.js').read_text(),'old')
+            self.assertEqual((runtime/'Claude.app/Contents/signed-file').read_text(),'untouched')
+            self.assertFalse(list(base.glob('.repair-*')))
+    def test_failed_repair_directory_activation_restores_previous_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base,runtime,package,original,source,preferences,logs=self.repair_fixture(tmp)
+            rename=pathlib.Path.rename
+            def fail_activation(path,target):
+                if path.name.startswith('.repair-') and target==runtime:raise OSError('activation failed')
+                return rename(path,target)
+            with self.repair_mocks(base,runtime,package,original,source,logs),patch.object(pathlib.Path,'rename',fail_activation):
+                with self.assertRaisesRegex(OSError,'activation failed'):manage.repair(source)
+                manage.launch.assert_not_called()
+            self.assertEqual((runtime/'lib/engine.js').read_text(),'old')
+            self.assertEqual((runtime/'Claude.app/Contents/signed-file').read_text(),'untouched')
+            self.assertFalse(list(base.glob('.repair-*')))
+    def test_failed_repair_post_activation_verification_restores_previous_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base,runtime,package,original,source,preferences,logs=self.repair_fixture(tmp)
+            with self.repair_mocks(base,runtime,package,original,source,logs),patch.object(manage,'verify_installed_app',side_effect=RuntimeError('verification failed')):
+                with self.assertRaisesRegex(RuntimeError,'verification failed'):manage.repair(source)
+                manage.launch.assert_not_called()
+            self.assertEqual((runtime/'lib/engine.js').read_text(),'old')
+            self.assertEqual((runtime/'Claude.app/Contents/signed-file').read_text(),'untouched')
+            self.assertFalse(list(base.glob('.repair-*')))
+    def test_failed_repair_rollback_preserves_both_runtime_backups_for_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base,runtime,package,original,source,preferences,logs=self.repair_fixture(tmp)
+            rename=pathlib.Path.rename
+            def fail_rollback(path,target):
+                if path.name.startswith('Runtime-') and target==runtime:raise OSError('rollback disk failure')
+                return rename(path,target)
+            with self.repair_mocks(base,runtime,package,original,source,logs),patch.object(pathlib.Path,'rename',fail_rollback),patch.object(manage,'verify_installed_app',side_effect=RuntimeError('verification failed')):
+                with self.assertRaisesRegex(RuntimeError,'rollback needs attention'):manage.repair(source)
+                manage.launch.assert_not_called()
+            self.assertEqual(next(base.glob('Backups/Runtime-*/lib/engine.js')).read_text(),'old')
+            self.assertEqual(next(base.glob('.repair-*/lib/engine.js')).read_text(),'new')
+            self.assertEqual((original/'signed-file').read_text(),'vendor app')
+    def test_update_uses_pinned_source_compatibility_even_when_native_original_is_newer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base,runtime,package=self.fixture(tmp)
+            manifest=json.loads((runtime/'manifest.json').read_text())
+            manifest['source']={'asarHash':'hash'}
+            manifest['original']={'asarHash':'new-native-hash'}
+            (runtime/'manifest.json').write_text(json.dumps(manifest))
+            with patch.multiple(manage,BASE=base,RUNTIME=runtime,PACKAGE=package),patch.object(manage,'own_pid',return_value=None),patch.object(manage,'ensure_closed'),patch.object(manage,'verify_installed_app'),patch.object(manage,'log'),patch.object(manage,'launch'):
+                manage.update()
+            self.assertEqual((runtime/'lib/engine.js').read_text(),'new')
+    def test_repair_without_verified_baseline_changes_no_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base,runtime,package,original,source,preferences,logs=self.repair_fixture(tmp)
+            with self.repair_mocks(base,runtime,package,original,source,logs):
+                with self.assertRaisesRegex(RuntimeError,'No verified supported Claude source'):manage.repair()
+                manage.run.assert_not_called()
+            self.assertEqual((runtime/'lib/engine.js').read_text(),'old')
+    def test_pinned_source_survives_native_original_updates_but_source_or_copy_changes_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base,runtime,package,original,source,preferences,logs=self.repair_fixture(tmp)
+            with self.repair_mocks(base,runtime,package,original,source,logs):
+                manage.repair(source)
+                manifest=manage.load_manifest()
+                (original/'signed-file').write_text('a newer native app')
+                manage.verify_installed_app(manifest)
+                (runtime/'Claude.app/signed-file').write_text('vendor overwrote patched copy')
+                with self.assertRaisesRegex(RuntimeError,'Local app changed'):manage.verify_installed_app(manifest)
+                with patch.object(manage,'detect',return_value={'version':'unknown','asarHash':'different','vendorSigned':True}):
+                    with self.assertRaisesRegex(RuntimeError,'tested baseline'):manage.verify_installed_app(manifest)
 if __name__=='__main__':unittest.main()

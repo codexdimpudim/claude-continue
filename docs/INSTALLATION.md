@@ -10,7 +10,7 @@ Use **Check Compatibility.command** to inspect your app before installing. It do
 
 ## First installation
 
-1. Download the current Beta ZIP from [Releases](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.2-beta.1).
+1. Download the current Beta ZIP from [Releases](https://github.com/codexdimpudim/claude-continue/releases/tag/v2.2.3-beta.1).
 2. Extract it and keep every file in the same folder. Avoid running launchers from inside a ZIP viewer.
 3. Finish active work and quit Claude.
 4. Double-click **Install.command**. If macOS prevents it from opening, inspect the package and use your normal approved method to open it. Do not disable system security settings to install this preview.
@@ -24,9 +24,9 @@ The small release ZIP includes plugin sources, launchers, tests, documentation, 
 
 ## Subsequent launches
 
-Use **Launch.command**. The normal Claude icon opens the original app and does not load this plugin. The launcher checks that the original and copied app still match the recorded build and modified-file hashes. If the widget is off, open the intended chat and press Start when you want continuation.
+Use **Launch.command**. The normal Claude icon opens the original app and does not load this plugin. The launcher opens or foregrounds the exact Runtime/Claude.app, using the installed manager. It verifies the preserved signed source and copied-app hashes. If the widget is off, open the intended chat and press Start when you want continuation.
 
-If launch verification times out, let the app finish loading, open an existing chat, and run Launch.command again. A timeout does not prove a complete installation.
+On the home screen, Launch reports that the widget loaded and tells you to open a chat. This is distinct from verifying composer/Send controls in a chat. If verification is still incomplete, let startup finish and run Launch.command again.
 
 ## Updating an existing plugin installation
 
@@ -37,6 +37,14 @@ If launch verification times out, let the app finish loading, open an existing c
 5. Your prompt, themes, and mode preferences remain saved. Reopen your intended chat and press Start: automation starts off after the update. The welcome tour appears only if it has never been shown in this profile.
 
 The source updater does not re-sign or upgrade Claude itself. A vendor app update needs a fresh compatibility investigation.
+
+## Repairing a missing or overwritten local copy
+
+Earlier releases allowed Claude's vendor updater to replace the copied app and erase the plugin. Version 2.2.3 blocks the inspected native update entry points in the verified managed copy before vendor initialization. The original app remains free to update normally.
+
+Quit Claude and run **Repair.command** from the complete new release folder. Repair finds an exact signed supported source in the original app or preserved installation backups, copies and verifies it, patches/signs a stage, then activates it. A newer unsupported original can remain installed: it is recorded as the restore target, while the supported source is retained separately. Existing runtime files move to a versioned backup; preferences and logs remain.
+
+Repair refuses an unknown source, insufficient disk space, an unmarked existing runtime, a running Claude process, or a vendor update already queued for the exact local app. It does not delete shared updater cache or patch an unsupported build. If the original and all supported backups are unavailable, repair needs a supported signed source before it can proceed.
 
 ## Uninstalling or returning to original Claude
 

@@ -8,6 +8,8 @@ Start with the card’s detail text. It explains the pause reason rather than tr
 
 Use Launch.command to open the managed copy, then open an existing chat. The original app does not load the plugin. If the local app takes time to load, run Launch.command again once its chat controls appear. If the launcher reports a version or hash mismatch, stop and use Check Compatibility.command; do not patch an unknown build by removing the checks.
 
+If an older managed copy updated itself and lost the widget, quit Claude and run Repair.command from the latest complete package. It rebuilds from the exact signed supported source or a preserved installation backup. The current original app remains installed. A missing Runtime is also repairable when a supported backup exists.
+
 ## Start or Resume immediately pauses
 
 - **Your message is still in the composer:** send or clear it yourself. The plugin preserves manual drafts.
@@ -39,7 +41,7 @@ The copied app is locally signed and has a different signing identity. Resolve K
 
 ## App update or compatibility failure
 
-Launch checks both the original build and the copied app’s recorded modified-file hashes. The loader also checks the copied ASAR hash when opened directly. An app update pauses launch rather than patching blindly. The plugin’s source updater is not a vendor app updater. File a compatibility request with version/build details, or use Restore Claude.command to return to the untouched original.
+Launch checks the preserved signed baseline and the copied app’s recorded modified-file hashes. The loader also checks the copied ASAR hash when opened directly and blocks its inspected native updater entry points. The original app can update independently. An unknown copied build pauses launch rather than being patched blindly. Use Repair.command to rebuild from a supported backup, file a compatibility request, or use Restore Claude.command to return to the current native original.
 
 Extract the complete release folder before running Update.command. The updater rejects missing files or a generated bundle that differs from its source files before it closes Claude. Keep the folder together; developers must rebuild after source changes. If another launcher is running, let it finish before launching again. After an update, reopen your existing chat and press Start.
 

@@ -1,5 +1,17 @@
 # Validation report
 
+## 2.2.3 Beta launch/repair — October 14, 2026
+
+Build: `2.2.3-mac-preview`. All **216 automated cases pass locally**: 77 engine, 70 renderer, 3 rendered acceptance, 33 loader, and 33 installer/repair/update/removal. Syntax, generated-bundle parity, launcher syntax, and whitespace checks pass. Added cases cover native update guards, home-only health, exact-path foreground launch, stale running-process health, backup source discovery, independent original updates, queued-update refusal, staged repair, and failed activation/rollback preservation.
+
+Scoped native updater logs showed the copied app was replaced with vendor Claude 2.37337.1 on October 13 at 11:56 p.m., erasing its hook. The original app updated independently the following morning. A preserved vendor-signed 2.31226.1 backup retained the exact supported ASAR hash. The shared updater state targeted the original app and had no existing pending payload; it was left untouched.
+
+Repair rebuilt a separate signed local copy from that verified backup. Its manifest separates the pinned source from the current original restore target. Real startup reports `compatible=true`, `bundleReady=true`, `vendorUpdatesBlocked=true`, and one `2.2.3-mac-preview` widget on the home screen in `DISABLED`, with no power assertion or repeated tour. The loader guard therefore initialized successfully against the actual Electron native updater, not only its mocks.
+
+Both the release Launch.command and Desktop launcher reopened the same verified managed process without starting another copy. The old downloaded Launch.command was redirected to the installed manager, with its prior bytes retained in a local backup. All six installed sources match the release. The original app remains vendor 2.37337.1; account preferences and shared updater files were not removed. No Claude messages, quota probes, or live continuations were sent.
+
+Home loading is not chat-control or model-response acceptance. Existing-chat completion and sending retain the earlier evidence and automated regressions below. A fresh real quota reset, overnight soak, Apple Silicon hardware, and future remote layouts remain unverified. The managed app is deliberately pinned; newer vendor builds need compatibility review before replacing it.
+
 ## 2.2.2 Beta audit — October 13, 2026
 
 Build: `2.2.2-mac-preview`, for the same exact Claude Desktop `2.31226.1` / Electron `44.4.3` build. The previous release remains available unchanged.
